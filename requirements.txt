@@ -1,0 +1,9 @@
+numpy
+scipy
+pandas
+matplotlib
+astropy
+scikit-learn
+sncosmo
+# OpSimSummaryV2 is only on GitHub:
+opsimsummaryv2 @ git+https://github.com/LSSTDESC/OpSimSummaryV2.git
