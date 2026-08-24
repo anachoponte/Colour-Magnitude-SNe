@@ -539,7 +539,7 @@ check('fourth lens scales as (mu/4)**-1',
       np.isclose(cm.time_delay_fourth_lens(5.0, 1.0, 0.5),
                  2 * td4, rtol=1e-9), (cm.time_delay_fourth_lens(5.0, 1.0, 0.5), 2 * td4))
 
-print('\n=== integration: core-collapse weights ===')
+print('\n=== integration: core-collapse weights (SFR-tracking rate) ===')
 check('cc_ul_weight finite positive', np.isfinite(cm.cc_ul_weight(0.5)) and cm.cc_ul_weight(0.5) > 0)
 lw_cc = cm.cc_l_weight(0.5, 10.0)
 import astropy.units as _u, astropy.cosmology.units as _cu
@@ -547,6 +547,26 @@ from astropy.cosmology import Planck18 as _P18
 _d = (0.5 * _cu.redshift).to(_u.pc, _cu.redshift_distance(_P18, kind='comoving')).value
 check('cc_l_weight uses the 31 Gpc scale',
       np.isclose(lw_cc, cm.cc_ul_weight(0.5) * 0.5 * (_d / 31e9) ** 3 * 10.0 ** -2, rtol=1e-12))
+
+from cmsne.sn_rates import cc_rate_grid, rate_grid, cosmic_sfr_density
+z_cc, n_cc = cc_rate_grid()
+z_ia, n_ia = rate_grid()
+z_peak_cc = z_cc[np.argmax(n_cc)]
+z_peak_ia = z_ia[np.argmax(n_ia)]
+check('CC rate peaks near the SFR peak (z ~ 1.9)', 1.6 < z_peak_cc < 2.2, round(float(z_peak_cc), 2))
+# The Ia DTD shifts rate toward lower z, so CC gives relatively MORE weight to high z.
+r_cc = cm.cc_ul_weight(2.0) / cm.cc_ul_weight(0.3)
+r_ia = cm.ul_weight(2.0) / cm.ul_weight(0.3)
+check('CC up-weights high-z relative to the DTD-convolved Ia rate',
+      r_cc > r_ia, (round(float(r_cc), 2), round(float(r_ia), 2)))
+check('CC rate tracks the cosmic SFR shape',
+      np.allclose(n_cc / n_cc.max(),
+                  cosmic_sfr_density(z_cc) / cosmic_sfr_density(z_cc).max(), atol=1e-9))
+# the whole point: the CC weight is no longer just the Ia weight rescaled
+check('cc_ul_weight is NOT proportional to ul_weight across z',
+      not np.isclose(cm.cc_ul_weight(2.0) / cm.cc_ul_weight(0.3),
+                     cm.ul_weight(2.0) / cm.ul_weight(0.3), rtol=0.05),
+      (cm.cc_ul_weight(2.0) / cm.cc_ul_weight(0.3), cm.ul_weight(2.0) / cm.ul_weight(0.3)))
 
 print('\n=== integration: first_detection_epoch bug fix ===')
 class _LC:

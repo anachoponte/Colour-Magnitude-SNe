@@ -22,7 +22,7 @@ import astropy.cosmology.units as cu
 from astropy.cosmology import Planck18, WMAP9
 
 from .lsst import mask
-from .sn_rates import rate_grid
+from .sn_rates import rate_grid, cc_rate_grid
 
 
 def obs_to_mags(day_band_1, day_band_2, mag_band_1, mag_band_2,
@@ -127,27 +127,27 @@ def ul_weight(redshift_val):
 def cc_ul_weight(redshift_val):
     """Intrinsic (unlensed) core-collapse SN rate weight at ``redshift_val``.
 
-    .. note::
-       This currently reuses the SN Ia rate grid (:func:`rate_grid`) as a stand-in
-       for the core-collapse rate, so it is proportional to the Ia rate rather than
-       tracking the star-formation history directly. It is adequate as a relative
-       redshift weighting for the contaminant populations but is not a calibrated
-       CC rate -- see the reconciliation report.
+    Uses the star-formation-tracking core-collapse rate
+    (:func:`cmsne.sn_rates.cc_rate_grid`), which peaks near z ~ 1.9 -- distinct from
+    the delay-time-distribution SN Ia rate (peak z ~ 1). An earlier version reused the
+    Ia grid here, which gave the contaminant population the wrong redshift evolution.
     """
-    redshift, phi = rate_grid()
+    redshift, nCC = cc_rate_grid()
     index = np.argmin(np.abs(redshift - redshift_val))
-    return phi[index]
+    return nCC[index]
 
 
 def cc_l_weight(redshift_val, magnification):
-    """Lensed core-collapse SN weight: intrinsic rate times the strong-lensing optical depth.
+    """Lensed core-collapse SN weight: intrinsic CC rate times the strong-lensing optical depth.
 
-    The ``31e9 pc`` (31 Gpc) scale must match the one in
-    :func:`cmsne.sn_rates.prob_` and :func:`l_weight`; they are the same normalisation.
+    The intrinsic rate tracks the star-formation history
+    (:func:`cmsne.sn_rates.cc_rate_grid`). The ``31e9 pc`` (31 Gpc) scale must match
+    the one in :func:`cmsne.sn_rates.prob_` and :func:`l_weight`; they are the same
+    normalisation.
     """
-    redshift, phi = rate_grid()
+    redshift, nCC = cc_rate_grid()
     index = np.argmin(np.abs(redshift - redshift_val))
-    z_weight = phi[index]
+    z_weight = nCC[index]
     redshift_units = redshift_val * cu.redshift
     distance_unit = redshift_units.to(u.pc, cu.redshift_distance(Planck18, kind="comoving"))
     distance = distance_unit.value

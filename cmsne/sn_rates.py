@@ -28,6 +28,16 @@ def Mad_son(redshift):
     return 0.015 * M_sol * ((1 + redshift) ** 2.7 / (1 + ((1 + redshift) / 2.9) ** 5.6))
 
 
+def cosmic_sfr_density(redshift):
+    """Madau & Dickinson (2014) cosmic star-formation-rate density [Msun/yr/Mpc^3].
+
+    The same functional form as :func:`Mad_son` without the ``M_sol`` mass factor,
+    i.e. the SFR density in solar masses. This is the quantity the core-collapse
+    rate tracks (see :func:`compute_cc_rate_grid`).
+    """
+    return 0.015 * ((1 + redshift) ** 2.7 / (1 + ((1 + redshift) / 2.9) ** 5.6))
+
+
 def HZ(redshift):
     """Hubble parameter H(z) [km/s/Mpc]."""
     # find somewhere to cite these values from
@@ -97,6 +107,45 @@ def rate_grid():
     if _rate_grid_cache is None:
         _rate_grid_cache = compute_rate_grid()
     return _rate_grid_cache
+
+
+# Core-collapse SNe formed per unit stellar mass [1/Msun]. A standard IMF puts CC
+# progenitors in roughly 8-50 Msun; k ~ 0.007 /Msun is the usual normalisation. The
+# absolute value cancels once the weights are normalised, so only the redshift SHAPE
+# (that of the SFR) affects the analysis -- but it is kept explicit for clarity.
+K_CC = 0.0068
+
+
+def compute_cc_rate_grid(redshift=None):
+    """Intrinsic core-collapse SN rate on a redshift grid.
+
+    Core-collapse progenitors are short-lived (Myr), so the CC rate tracks the cosmic
+    star-formation history essentially without delay. This is the key difference from
+    SN Ia: the Ia rate (:func:`compute_rate_grid`) is the SFH convolved with a
+    delay-time distribution, which shifts and broadens it to *lower* redshift (Ia
+    peak z ~ 1), whereas the CC rate follows the SFR directly (peak z ~ 1.9).
+
+    Reusing the Ia grid for contaminants (as an earlier version did) therefore gave
+    the wrong redshift evolution -- it under-weighted high-z core-collapse events.
+
+    :param redshift: grid to evaluate on. Defaults to ``linspace(0, 10, 10000)``.
+    :return: ``(redshift, nCC)`` arrays, ``nCC`` the intrinsic core-collapse rate.
+    """
+    if redshift is None:
+        redshift = np.linspace(0, 10, 10000)
+    nCC = K_CC * cosmic_sfr_density(redshift)
+    return redshift, nCC
+
+
+_cc_rate_grid_cache = None
+
+
+def cc_rate_grid():
+    """Return the cached ``(redshift, nCC)`` intrinsic core-collapse rate grid."""
+    global _cc_rate_grid_cache
+    if _cc_rate_grid_cache is None:
+        _cc_rate_grid_cache = compute_cc_rate_grid()
+    return _cc_rate_grid_cache
 
 
 def mag_min(distance):
