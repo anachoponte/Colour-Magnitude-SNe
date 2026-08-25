@@ -35,8 +35,10 @@ source /rds/projects/s/smithgp-lensed-transients/andres/virtual-environments/cms
 # --- OpSim database (v5.3.2, the baseline the original run used) ----------------
 export CMSNE_OPSIM_DB="${CMSNE_OPSIM_DB:-/rds/projects/s/smithgp-lensed-transients/andres/opsim_data/baseline_v5.3.2_10yrs.db}"
 
-cd "$(dirname "$0")/.."
-echo "host=$(hostname)  commit=$(git rev-parse --short HEAD 2>/dev/null || echo ?)  db=$CMSNE_OPSIM_DB"
+# SLURM copies the batch script to a spool dir, so $0 is not in the repo. Use the
+# submit directory (the repo root, since you sbatch from there); fall back to $0.
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+echo "host=$(hostname)  pwd=$(pwd)  commit=$(git rev-parse --short HEAD 2>/dev/null || echo ?)  db=$CMSNE_OPSIM_DB"
 
 PAIRS=(g-r g-i g-z g-y r-i r-z r-y i-z i-y z-y)
 if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
