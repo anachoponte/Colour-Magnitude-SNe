@@ -601,6 +601,27 @@ if pop_ml:
     check('required_model="cluster" guarantees a finite cluster delay',
           all(np.isfinite(e['time_delay_cluster']) for e in pop_ml))
 
+print('\n=== multicolour: all-band photometry extraction ===')
+from cmsne import multicolour as mcol
+class _LCm:
+    def __init__(s, d, f, m):
+        s.obs_days = np.array(d, float); s.obs_filters = np.array(f); s.obs_mag = np.array(m, float)
+# g@2, r@3 detected; r@4 fainter; i@20 below depth (inf). Trigger = first detection (day 2).
+_lc = _LCm([2, 3, 20, 4], ['g', 'r', 'i', 'r'], [22.0, 21.5, np.inf, 21.7])
+_bp = mcol.band_photometry(_lc, 2.0, window=5.0)
+check('band_photometry picks nearest detection', np.isclose(_bp['lsstg'], 22.0) and np.isclose(_bp['lsstr'], 21.5),
+      (_bp['lsstg'], _bp['lsstr']))
+check('band_photometry NaN for undetected band', np.isnan(_bp['lssti']) and np.isnan(_bp['lsstu']))
+_f = mcol.event_multicolour(_lc)
+check('trigger epoch is first detection', _f['trigger_day'] == 2.0, _f['trigger_day'])
+check('colour = band mag difference', np.isclose(_f['gr'], 0.5), _f['gr'])
+check('colour NaN when a band is outside the window', np.isnan(_f['ri']))
+check('peakmag is brightest detection', np.isclose(_f['peakmag'], 21.5), _f['peakmag'])
+check('n_bands counts bands at trigger', _f['n_bands'] == 2, _f['n_bands'])
+check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+check('rate_weight dispatches by class',
+      mcol.rate_weight('uIa', 0.3, 1.0) > 0 and mcol.rate_weight('sig', 0.3, 10.0) > 0)
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
