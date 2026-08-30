@@ -58,6 +58,30 @@ def _colours(mags, suffix=''):
     return {f'{a[-1]}{b[-1]}{suffix}': (mags[a] - mags[b]) for a, b in ADJ_COLOURS}
 
 
+def first_detection_per_band(lightcurve, trigger):
+    """For each LSST band, the earliest detection: its day relative to ``trigger``
+    and its magnitude. Lets a colour vector be reconstructed as a function of how
+    long one waits after the trigger to accumulate bands.
+
+    :return: dicts ``(fd_day, fd_mag)`` keyed by band; NaN where a band is never
+        detected. ``fd_day`` is observer-days after the trigger (>= 0).
+    """
+    days = np.asarray(lightcurve.obs_days, dtype=float)
+    filt = np.asarray(lightcurve.obs_filters)
+    mag = np.asarray(lightcurve.obs_mag, dtype=float)
+    det = np.isfinite(mag)
+    fd_day, fd_mag = {}, {}
+    for b in LSST_BANDS:
+        m = det & (filt == b[4:])
+        if not np.any(m):
+            fd_day[b] = np.nan; fd_mag[b] = np.nan; continue
+        idx = np.where(m)[0]
+        j = idx[np.argmin(days[idx])]          # earliest detection in this band
+        fd_day[b] = float(days[j] - trigger)
+        fd_mag[b] = float(mag[j])
+    return fd_day, fd_mag
+
+
 def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
     """Colour feature vector for one light curve.
 
@@ -84,6 +108,13 @@ def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
     feat['peakmag'] = float(np.nanmin(mag[det]))
     feat['trigger_day'] = trigger
     feat['n_bands'] = int(sum(np.isfinite(v) for v in m0.values()))
+
+    # Per-band first-detection day (relative to trigger) and magnitude, for the
+    # recovery-vs-waiting-time analysis.
+    fd_day, fd_mag = first_detection_per_band(lightcurve, trigger)
+    for b in LSST_BANDS:
+        feat[f'fdday_{b[-1]}'] = fd_day[b]
+        feat[f'fdmag_{b[-1]}'] = fd_mag[b]
     return feat
 
 
