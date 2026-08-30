@@ -622,6 +622,31 @@ check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [
 check('rate_weight dispatches by class',
       mcol.rate_weight('uIa', 0.3, 1.0) > 0 and mcol.rate_weight('sig', 0.3, 10.0) > 0)
 
+print('\n=== ColourClassifier: multi-colour flexible boundary ===')
+from cmsne.classifier import ColourClassifier, colour_feature_matrix
+_rng = np.random.default_rng(7)
+def _mk(n, mu):                                   # events with a 5-colour vector, some NaN
+    out = []
+    for _ in range(n):
+        e = {k: float(_rng.normal(mu, 0.4)) for k in ['ug', 'gr', 'ri', 'iz', 'zy']}
+        e['peakmag'] = float(_rng.normal(22, 1))
+        for k in _rng.choice(['ug', 'gr', 'ri', 'iz', 'zy'], 2, replace=False):
+            e[k] = np.nan                         # emulate missing bands
+        out.append(e)
+    return out
+sig_ev = _mk(1500, 1.2); bg_ev = _mk(3000, 0.0)   # signal redder than background
+Xm, cols = colour_feature_matrix(sig_ev[:3])
+check('feature matrix shape + NaNs', Xm.shape == (3, 6) and np.isnan(Xm).any(), (Xm.shape,))
+clf = ColourClassifier(target_fpr=0.10).fit(sig_ev, bg_ev)
+rec = clf.recovery_rate(sig_ev)
+fpr = float(np.mean(clf.predict(bg_ev)))
+check('separable colours: high recovery', rec > 0.8, round(rec, 3))
+check('threshold pins contamination near target', abs(fpr - 0.10) < 0.06, round(fpr, 3))
+check('NaN colours handled (no crash, finite scores)', np.all(np.isfinite(clf.score(sig_ev))))
+# a rate-weighted recovery call runs and stays in [0,1]
+rw = clf.recovery_rate(sig_ev, weights=np.abs(_rng.normal(1, 0.3, len(sig_ev))))
+check('weighted recovery in range', 0.0 <= rw <= 1.0, round(rw, 3))
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
