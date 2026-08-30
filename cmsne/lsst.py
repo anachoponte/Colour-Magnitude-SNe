@@ -28,6 +28,25 @@ contaminant_info = [
     (-16.90, 1.12, 'nugent-sn2p'),
 ]
 
+# Relative volumetric fractions of the core-collapse sub-types (of all CC), from
+# volume-limited samples (Li et al. 2011; Shivvers et al. 2017). Used to weight the
+# contaminant background by a realistic sub-type mix rather than equal-per-template.
+# Sum to 1; feed them to the rate weight so, e.g., the rare SN IIn/IIL do not carry
+# the same weight as the common SN IIP.
+CC_FRACTIONS = {
+    'nugent-sn1bc': 0.36,   # Ib / Ic / IIb
+    'nugent-sn2p':  0.55,   # II-P (most common)
+    'nugent-sn2n':  0.06,   # II-n (rare)
+    'nugent-sn2l':  0.03,   # II-L (rare)
+}
+
+# Volumetric core-collapse : SN Ia rate ratio (order unity-to-few; CC outnumber Ia,
+# more so at higher redshift as both track/lag star formation). The package's Ia and
+# CC rate grids carry independent, uncalibrated normalisations, so this constant is
+# the knob to set the cross-class balance from a cited rate compilation; 1.0 leaves
+# the grids' own implied ratio unchanged. See cmsne.sn_rates.
+CC_TO_IA_RATE = 1.0
+
 
 class LSSTproperties:
     LSST_u = {'magnitude_zero_point': 26.52,  # from https://smtn-002.lsst.io/ check if up to date!!

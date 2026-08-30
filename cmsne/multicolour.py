@@ -19,7 +19,7 @@ from scipy.stats import skewnorm
 from .config import survey_dates
 from .opsim import initialise_opsim_summary, create_sky_pointings
 from .lightcurve import Transient, get_observations
-from .lsst import bands as LSST_BANDS
+from .lsst import bands as LSST_BANDS, CC_FRACTIONS, CC_TO_IA_RATE
 from .colour_magnitude import ul_weight, cc_ul_weight, l_weight, cc_l_weight
 
 # Adjacent-band colours across the ugrizy set.
@@ -195,18 +195,23 @@ class MultiColourGenerator:
         return pop
 
 
-def rate_weight(kind_source, z, magnification):
+def rate_weight(kind_source, z, magnification, source=None):
     """Per-event rate weight, matching the population it belongs to.
 
     ``kind_source`` is one of ``'sig'`` (lensed Ia), ``'uIa'`` (unlensed Ia),
-    ``'uCC'`` (unlensed core-collapse), ``'lCC'`` (lensed core-collapse).
+    ``'uCC'`` (unlensed core-collapse), ``'lCC'`` (lensed core-collapse). For the
+    core-collapse kinds, pass the sncosmo ``source`` so the weight is scaled by that
+    sub-type's volumetric fraction (:data:`cmsne.lsst.CC_FRACTIONS`) and the overall
+    core-collapse:Ia rate ratio (:data:`cmsne.lsst.CC_TO_IA_RATE`) — giving a
+    realistic contaminant composition rather than equal-per-template.
     """
     if kind_source == 'uIa':
         return ul_weight(z)
-    if kind_source == 'uCC':
-        return cc_ul_weight(z)
     if kind_source == 'sig':
         return l_weight(z, magnification)
+    frac = CC_FRACTIONS.get(source, 1.0) * CC_TO_IA_RATE
+    if kind_source == 'uCC':
+        return cc_ul_weight(z) * frac
     if kind_source == 'lCC':
-        return cc_l_weight(z, magnification)
+        return cc_l_weight(z, magnification) * frac
     raise ValueError(kind_source)
