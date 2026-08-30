@@ -287,6 +287,26 @@ np.savez('cadence_population.npz',
          weights_l=np.array(all_weights_l, dtype=float))
 print(f"saved {len(all_time_delays)} events to cadence_population.npz")
 '''),
+    md("""
+## Beyond the single-colour boundary
+
+This notebook fits a straight line in one colour vs magnitude. The boundary and
+multi-colour studies (see the results write-up) show that a **flexible boundary on
+the full ugrizy colour vector** separates lensed SN Ia from the contaminant
+background far better, especially once a real cadence limits which bands you have.
+
+That identifier now lives in the package:
+
+```python
+from cmsne.classifier import ColourClassifier
+clf = ColourClassifier(target_fpr=0.10).fit(signal_events, background_events,
+                                             signal_weights, background_weights)
+recovery = clf.recovery_rate(signal_events, weights=signal_weights)
+```
+
+For production, generate the populations with `scripts/run_full.py` (colour-magnitude
+grid) and `scripts/run_multicolour.py` (all-band photometry), then analyse offline.
+"""),
 ])
 
 # ---------------------------------------------------------------- notebook 05

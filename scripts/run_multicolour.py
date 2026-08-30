@@ -47,7 +47,7 @@ def run_class(cls, n, seed):
     gen = MultiColourGenerator(cls['source'])
     pop = gen.generate_many(n, cls['kind'], z_range, cls['am'], cls['sd'])
     for e in pop:
-        e['weight'] = float(rate_weight(cls['rate'], e['z'], e['magnification']))
+        e['weight'] = float(rate_weight(cls['rate'], e['z'], e['magnification'], source=cls['source']))
         e['class'] = cls['name']
     return pop, z_range
 

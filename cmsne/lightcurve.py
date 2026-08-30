@@ -64,6 +64,41 @@ def first_detection_epoch(lightcurve, redshift, rest_frame_peak_day):
     return np.min(obs_days[detected]) / (1 + redshift) - rest_frame_peak_day
 
 
+def fitted_peak_magnitude(lightcurve, band=None):
+    """Interpolated light-curve **peak** (brightest) magnitude.
+
+    ``obs_to_mags`` returns the *first-detected* magnitude, which is fainter and
+    noisier than the true peak. This fits a parabola to the three detections around
+    the brightest observation and returns the vertex magnitude — a cleaner
+    brightness feature for the classifier.
+
+    :param band: restrict to one LSST band (e.g. ``'lsstr'``); ``None`` uses all
+        detected points.
+    :return: peak magnitude, or ``np.nan`` if nothing is detected.
+    """
+    days = np.asarray(lightcurve.obs_days, dtype=float)
+    mag = np.asarray(lightcurve.obs_mag, dtype=float)
+    det = np.isfinite(mag)
+    if band is not None:
+        det = det & (np.asarray(lightcurve.obs_filters) == band[4:])
+    d, m = days[det], mag[det]
+    if len(m) == 0:
+        return np.nan
+    if len(m) < 3:
+        return float(np.min(m))
+    i = int(np.argmin(m))                       # brightest detection
+    lo, hi = max(0, i - 1), min(len(m), i + 2)  # 3 points bracketing the peak
+    dd, mm = d[lo:hi], m[lo:hi]
+    if len(np.unique(dd)) < 3:
+        return float(np.min(m))
+    a, b, _ = np.polyfit(dd, mm, 2)
+    if a <= 0:                                  # not concave-up: no interior minimum
+        return float(np.min(m))
+    t_peak = -b / (2 * a)
+    m_peak = float(np.polyval(np.polyfit(dd, mm, 2), t_peak))
+    return min(m_peak, float(np.min(m)))        # peak is at least as bright as any sample
+
+
 def get_app_magnitude(model, day, band, lim_mag):
     """
     Calculate the apparent magnitude + error for each supernova image at a certain time stamp.

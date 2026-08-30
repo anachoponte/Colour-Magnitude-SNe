@@ -647,6 +647,27 @@ check('NaN colours handled (no crash, finite scores)', np.all(np.isfinite(clf.sc
 rw = clf.recovery_rate(sig_ev, weights=np.abs(_rng.normal(1, 0.3, len(sig_ev))))
 check('weighted recovery in range', 0.0 <= rw <= 1.0, round(rw, 3))
 
+print('\n=== cleanups: CC sub-type fractions + fitted peak ===')
+from cmsne.lsst import CC_FRACTIONS, CC_TO_IA_RATE
+from cmsne.multicolour import rate_weight
+check('CC_FRACTIONS sum to 1', abs(sum(CC_FRACTIONS.values()) - 1.0) < 1e-9, sum(CC_FRACTIONS.values()))
+check('common CC (II-P) weighted above rare (II-L)',
+      rate_weight('uCC', 0.3, 1.0, 'nugent-sn2p') > rate_weight('uCC', 0.3, 1.0, 'nugent-sn2l'))
+check('fraction scales the CC weight',
+      np.isclose(rate_weight('uCC', 0.3, 1.0, 'nugent-sn2p'),
+                 cm.cc_ul_weight(0.3) * CC_FRACTIONS['nugent-sn2p'] * CC_TO_IA_RATE))
+check('Ia weight ignores source arg',
+      rate_weight('uIa', 0.3, 1.0, 'nugent-sn2p') == rate_weight('uIa', 0.3, 1.0))
+
+pk_days = np.array([-8., -4., 0., 4., 8.]); pk_mag = 0.02 * pk_days ** 2 + 21.0   # min 21.0 at day 0
+class _LCp:
+    obs_days = pk_days; obs_mag = pk_mag; obs_filters = np.array(['r'] * 5)
+peak = lcmod.fitted_peak_magnitude(_LCp())
+check('fitted peak recovers the parabola vertex', abs(peak - 21.0) < 0.05, round(peak, 3))
+check('fitted peak brighter than first detection', peak < pk_mag[0], (round(peak, 2), pk_mag[0]))
+check('fitted peak NaN when nothing detected',
+      np.isnan(lcmod.fitted_peak_magnitude(type('L', (), {'obs_days': np.array([1.]), 'obs_mag': np.array([np.inf]), 'obs_filters': np.array(['r'])})())))
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
