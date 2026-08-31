@@ -646,6 +646,23 @@ check('NaN colours handled (no crash, finite scores)', np.all(np.isfinite(clf.sc
 # a rate-weighted recovery call runs and stays in [0,1]
 rw = clf.recovery_rate(sig_ev, weights=np.abs(_rng.normal(1, 0.3, len(sig_ev))))
 check('weighted recovery in range', 0.0 <= rw <= 1.0, round(rw, 3))
+# probability output + prior adjustment + ranking
+p_bal = clf.probability(sig_ev)
+check('probability in [0,1]', np.all((p_bal >= 0) & (p_bal <= 1)))
+check('signal more lensed-like than background (mean prob)',
+      p_bal.mean() > clf.probability(bg_ev).mean(), (round(p_bal.mean(), 2),))
+p_true = clf.probability(sig_ev, prior=1e-3)
+check('lower prior never raises the posterior', np.all(p_true <= p_bal + 1e-9))
+# at the true prior, an unlensed-like (background) object collapses toward the prior
+check('background posterior collapses at the true prior',
+      clf.probability(bg_ev, prior=1e-3).mean() < 0.01,
+      round(float(clf.probability(bg_ev, prior=1e-3).mean()), 5))
+check('prior adjustment is monotonic in the score',
+      np.all(np.argsort(p_true) == np.argsort(p_bal)))
+order = clf.rank(sig_ev + bg_ev)
+check('rank returns a full permutation, most-lensed first',
+      len(order) == len(sig_ev) + len(bg_ev) and clf.score(sig_ev + bg_ev)[order[0]] ==
+      clf.score(sig_ev + bg_ev).max())
 
 print('\n=== cleanups: CC sub-type fractions + fitted peak ===')
 from cmsne.lsst import CC_FRACTIONS, CC_TO_IA_RATE
