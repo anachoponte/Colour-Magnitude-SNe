@@ -17,6 +17,7 @@ expose ``lensed_colour`` and ``band_1_mag_l``.
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.calibration import CalibratedClassifierCV
 
 from .colour_magnitude import weighted_quantile
 
@@ -42,15 +43,22 @@ class ColourClassifier:
 
     :param keys: colour feature names to use.
     :param include_peakmag: also use the (apparent) peak magnitude as a feature.
-    :param target_fpr: contamination (false-positive rate) the decision threshold
-        is set to, on the rate-weighted background.
+    :param target_fpr: contamination (false-positive rate) the optional hard
+        decision threshold is set to, on the rate-weighted background. The boundary
+        between lensed and unlensed is a broad gradient, not a sharp line, so prefer
+        :meth:`probability` / :meth:`rank` over the hard :meth:`predict`.
+    :param calibrate: wrap the tree in isotonic probability calibration so
+        :meth:`probability` returns a well-behaved posterior (at the balanced
+        training prior) rather than a raw, uncalibrated tree score.
     :param hgb: extra keyword args forwarded to ``HistGradientBoostingClassifier``.
     """
 
-    def __init__(self, keys=COLOUR_KEYS, include_peakmag=True, target_fpr=0.10, **hgb):
+    def __init__(self, keys=COLOUR_KEYS, include_peakmag=True, target_fpr=0.10,
+                 calibrate=True, **hgb):
         self.keys = list(keys)
         self.extra = ('peakmag',) if include_peakmag else ()
         self.target_fpr = target_fpr
+        self.calibrate = calibrate
         self.params = dict(max_depth=4, learning_rate=0.1, max_iter=300,
                            l2_regularization=1.0, random_state=0)
         self.params.update(hgb)
@@ -77,19 +85,66 @@ class ColourClassifier:
         X = np.vstack([Xs, Xb])
         y = np.r_[np.ones(len(Xs)), np.zeros(len(Xb))]
         w = np.r_[ws, wb]
-        self.clf = HistGradientBoostingClassifier(**self.params).fit(X, y, sample_weight=w)
+        # Signal and background totals are balanced, so the trained posterior is at a
+        # 0.5 prior; probability(prior=...) rescales it to any other prior.
+        self.train_prior = float(ws.sum() / (ws.sum() + wb.sum()))
+
+        base = HistGradientBoostingClassifier(**self.params)
+        if self.calibrate:
+            self.clf = CalibratedClassifierCV(base, method='isotonic', cv=3).fit(X, y, sample_weight=w)
+        else:
+            self.clf = base.fit(X, y, sample_weight=w)
 
         sb = self.clf.predict_proba(Xb)[:, 1]
         self.threshold = float(weighted_quantile(sb, wb, q=1.0 - self.target_fpr))
         return self
 
     def score(self, events):
-        """Probability each event is a lensed SN Ia."""
+        """Raw ranking score (calibrated posterior at the balanced training prior).
+
+        Monotonic with :meth:`probability`, so it gives the same ordering; use it
+        when you only need to rank.
+        """
         X, _ = colour_feature_matrix(events, self.keys, self.extra)
         return self.clf.predict_proba(X)[:, 1]
 
+    def probability(self, events, prior=None):
+        """Posterior probability P(lensed SN Ia) for each event.
+
+        The boundary is a gradient, not a line — this is the recommended output.
+        With ``prior=None`` it returns the calibrated posterior at the balanced
+        training prior (good for ranking and for reading off "how lensed-like").
+        Pass the **true** lensed-SN-Ia prior (e.g. ``1e-3``) to get the honest
+        posterior for a real stream, which correctly comes out small — see the
+        base-rate discussion in the results write-up.
+
+        :param prior: true fraction of lensed SN Ia among the transients scored, or
+            ``None`` to keep the training prior.
+        :return: array of probabilities in [0, 1].
+        """
+        p = np.clip(self.score(events), 1e-12, 1 - 1e-12)
+        if prior is None:
+            return p
+        p0 = self.train_prior
+        # likelihood ratio with the training prior divided out, re-applied at `prior`
+        lr = (p / (1 - p)) * ((1 - p0) / p0)
+        odds = lr * (prior / (1 - prior))
+        return odds / (1 + odds)
+
+    def rank(self, events):
+        """Indices of ``events`` ordered most- to least-lensed-like (by score).
+
+        The prioritised follow-up list: work down it until the budget runs out,
+        rather than applying a hard cut.
+        """
+        return np.argsort(self.score(events))[::-1]
+
     def predict(self, events):
-        """Boolean: score at or above the contamination-pinned threshold."""
+        """Boolean hard cut at the contamination-pinned threshold.
+
+        Kept for convenience, but a hard boundary is the wrong picture for a broad,
+        gradual transition — prefer :meth:`probability` / :meth:`rank`.
+        """
         return self.score(events) >= self.threshold
 
     def recovery_rate(self, signal_events, weights=None):
