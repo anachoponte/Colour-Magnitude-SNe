@@ -40,12 +40,14 @@ CC_FRACTIONS = {
     'nugent-sn2l':  0.03,   # II-L (rare)
 }
 
-# Volumetric core-collapse : SN Ia rate ratio (order unity-to-few; CC outnumber Ia,
-# more so at higher redshift as both track/lag star formation). The package's Ia and
-# CC rate grids carry independent, uncalibrated normalisations, so this constant is
-# the knob to set the cross-class balance from a cited rate compilation; 1.0 leaves
-# the grids' own implied ratio unchanged. See cmsne.sn_rates.
-CC_TO_IA_RATE = 1.0
+# Volumetric core-collapse : SN Ia rate ratio. The package's Ia and CC rate grids
+# carry independent normalisations, so this constant sets the cross-class balance.
+# Anchored to the local (z~0) literature rates -- SN Ia ~2.4e-5/yr/Mpc^3
+# (Frohmaier et al. 2019) and CC ~7e-5/yr/Mpc^3 (Li et al. 2011; Taylor et al.
+# 2014), i.e. CC:Ia ~= 3:1 -- which the grids' own z~0.05 ratio (~0.86) is scaled to
+# reach (3 / 0.86 ~= 3.5). The redshift evolution of the ratio then follows the
+# SFR (CC) and delay-time-distribution (Ia) shapes in cmsne.sn_rates.
+CC_TO_IA_RATE = 3.5
 
 
 class LSSTproperties:
