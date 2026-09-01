@@ -18,7 +18,7 @@ from scipy.stats import skewnorm
 
 from .config import survey_dates
 from .opsim import initialise_opsim_summary, create_sky_pointings
-from .lightcurve import Transient, get_observations
+from .lightcurve import Transient, get_observations, fitted_peak_magnitude
 from .lsst import bands as LSST_BANDS, CC_FRACTIONS, CC_TO_IA_RATE
 from .colour_magnitude import ul_weight, cc_ul_weight, l_weight, cc_l_weight
 
@@ -105,7 +105,22 @@ def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
     m1 = band_photometry(lightcurve, trigger + evolution_days, window)
 
     feat = {**_colours(m0), **_colours(m1, '_d')}
+    # Three brightness features, so the classifier's magnitude input can be chosen
+    # and compared (see docs/methods_and_results.md):
+    #   peakmag          -- brightest observed sample across all bands (nanmin);
+    #   peakmag_firstdet -- magnitude of the earliest detection (the trigger point),
+    #                       the noisiest/faintest-biased option;
+    #   peakmag_fit      -- parabola-fitted light-curve peak in the best-sampled
+    #                       band, which interpolates the true peak between visits.
+    det_idx = np.where(det)[0]
+    first_idx = det_idx[np.argmin(days[det_idx])]
     feat['peakmag'] = float(np.nanmin(mag[det]))
+    feat['peakmag_firstdet'] = float(mag[first_idx])
+    filt = np.asarray(lightcurve.obs_filters)
+    det_filters = filt[det]
+    vals, counts = np.unique(det_filters, return_counts=True)
+    best_band = 'lsst' + str(vals[int(np.argmax(counts))])
+    feat['peakmag_fit'] = fitted_peak_magnitude(lightcurve, band=best_band)
     feat['trigger_day'] = trigger
     feat['n_bands'] = int(sum(np.isfinite(v) for v in m0.values()))
 

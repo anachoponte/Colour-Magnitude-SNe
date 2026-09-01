@@ -617,6 +617,9 @@ check('trigger epoch is first detection', _f['trigger_day'] == 2.0, _f['trigger_
 check('colour = band mag difference', np.isclose(_f['gr'], 0.5), _f['gr'])
 check('colour NaN when a band is outside the window', np.isnan(_f['ri']))
 check('peakmag is brightest detection', np.isclose(_f['peakmag'], 21.5), _f['peakmag'])
+check('peakmag_firstdet is the earliest detection', np.isclose(_f['peakmag_firstdet'], 22.0), _f['peakmag_firstdet'])
+check('peakmag_fit falls back to brightest when <3 band points',
+      np.isclose(_f['peakmag_fit'], 21.5), _f['peakmag_fit'])
 check('n_bands counts bands at trigger', _f['n_bands'] == 2, _f['n_bands'])
 check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
 check('rate_weight dispatches by class',
