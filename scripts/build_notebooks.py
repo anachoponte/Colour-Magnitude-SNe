@@ -1,4 +1,5 @@
-"""Regenerate notebooks/04_colour_magnitude.ipynb and notebooks/05_time_delays.ipynb.
+"""Regenerate notebooks/04_colour_magnitude.ipynb, 05_time_delays.ipynb and
+06_colour_classifier.ipynb.
 
 These two notebooks are GENERATED. Edit this script and re-run it rather than
 editing the .ipynb files directly, or the two will silently diverge:
@@ -567,7 +568,165 @@ plt.show()
 '''),
 ])
 
-for name, nb in [("04_colour_magnitude.ipynb", nb04), ("05_time_delays.ipynb", nb05)]:
+# ---------------------------------------------------------------- notebook 06
+nb06 = notebook([
+    md("""
+# 06 — The colour-only identifier in practice
+
+This notebook demonstrates the **actual method**: `cmsne.classifier.ColourClassifier`,
+a missing-data-native gradient-boosted classifier on the ugrizy colour vector. It is a
+**colour-only early trigger** — no host photo-z, no spectroscopy — meant to flag a
+strongly lensed SN Ia from its first-detection photometry.
+
+We show the three things that matter operationally:
+
+1. **fit** the classifier and measure recovery at a fixed contamination;
+2. read a **calibrated probability** that folds in the true (brutal) base rate;
+3. **rank** candidates — the real output, since colour cannot make a pure sample alone.
+
+See `docs/methods_and_results.md` for the full method and the production results.
+"""),
+    code(SETUP + '''
+from cmsne.classifier import ColourClassifier, COLOUR_KEYS
+rng = np.random.default_rng(0)
+'''),
+    md("""
+## A representative labelled sample
+
+Real runs build this with `cmsne.multicolour.MultiColourGenerator` on an LSST OpSim
+database (shown at the end). Here we synthesise a small, self-contained sample with the
+**same structure**, so the notebook runs anywhere in seconds:
+
+- **lensed SN Ia** (signal): SN Ia colours, brighter (magnified) and slightly redder (higher redshift);
+- **unlensed SN Ia**: *colour-identical* to lensed Ia — magnification is achromatic — just fainter. This is the irreducible contaminant.
+- **core-collapse**: bluer, with more scatter.
+
+A real cadence rarely delivers every colour at first detection, so each colour is randomly
+dropped to `NaN`; the classifier handles missing colours natively (no imputation).
+"""),
+    code('''
+COLS = COLOUR_KEYS  # ['ug', 'gr', 'ri', 'iz', 'zy']
+
+def make(n, means, mag_mean, mag_scatter, colour_scatter, drop=0.6):
+    ev = []
+    for _ in range(n):
+        e = {c: float(m + rng.normal(0, colour_scatter)) for c, m in zip(COLS, means)}
+        for c in COLS:                      # a real cadence usually misses most colours
+            if rng.random() < drop:
+                e[c] = np.nan
+        e["peakmag"] = float(rng.normal(mag_mean, mag_scatter))
+        ev.append(e)
+    return ev
+
+lensed_Ia   = make(3000,  [1.35, 0.70, 0.36, 0.16, 0.05], 23.2, 0.6, 0.10)  # signal (magnified: brighter)
+unlensed_Ia = make(12000, [1.31, 0.67, 0.34, 0.15, 0.04], 23.7, 0.6, 0.12)  # ~70% of bg: colour-identical, just fainter
+core_coll   = make(5000,  [0.65, 0.32, 0.16, 0.06, 0.00], 24.0, 0.9, 0.22)  # ~30% of bg: bluer
+
+n_bg = len(unlensed_Ia) + len(core_coll)
+print(f"signal (lensed Ia): {len(lensed_Ia)}")
+print(f"background: {n_bg}  ({len(unlensed_Ia)} unlensed Ia + {len(core_coll)} core-collapse)")
+print(f"detected background composition: {100*len(unlensed_Ia)/n_bg:.0f}% unlensed Ia / "
+      f"{100*len(core_coll)/n_bg:.0f}% core-collapse  (matches the production ~70/30)")
+'''),
+    md("""
+## 1. Fit the classifier
+
+`fit()` takes the signal and background events (and optional per-event rate weights,
+which default to 1 here). It balances the classes internally, isotonic-calibrates the
+score, and pins a decision threshold to `target_fpr` (10% contamination). We fit on a
+training half and evaluate on the held-out half.
+"""),
+    code('''
+def split(ev, frac=0.5):
+    k = int(len(ev) * frac); idx = rng.permutation(len(ev))
+    return [ev[i] for i in idx[:k]], [ev[i] for i in idx[k:]]
+
+sig_tr, sig_te = split(lensed_Ia)
+uIa_tr, uIa_te = split(unlensed_Ia)
+cc_tr,  cc_te  = split(core_coll)
+bg_tr, bg_te = uIa_tr + cc_tr, uIa_te + cc_te
+
+clf = ColourClassifier(target_fpr=0.10).fit(sig_tr, bg_tr)
+print(f"recovery of lensed SN Ia at 10% contamination (held-out): "
+      f"{clf.recovery_rate(sig_te):.2f}")
+'''),
+    md("""
+## 2. Calibrated probability and the true base rate
+
+`probability()` returns a calibrated `P(lensed SN Ia | colour)`. Passing the **true prior**
+folds in how rare lensed SNe Ia actually are (~1 in 10⁴ of detected SNe; ~9/yr vs ~10⁵
+detected SNe/yr). At that prior the background posterior collapses toward zero, while a
+genuinely signal-like object keeps a meaningful probability — exactly the Bayesian
+behaviour you want from a trigger.
+"""),
+    code('''
+test = sig_te + bg_te
+y = np.array([1] * len(sig_te) + [0] * len(bg_te))
+
+p_bal   = clf.probability(test)                # balanced (training) prior
+p_prior = clf.probability(test, prior=1e-4)    # true rarity folded in
+
+for label, p in [("balanced prior", p_bal), ("true prior 1e-4", p_prior)]:
+    print(f"{label:>16}:  median P(real lensed Ia) = {np.median(p[y == 1]):.3f}   "
+          f"median P(background) = {np.median(p[y == 0]):.2e}")
+'''),
+    md("""
+## 3. Ranking — the operational output
+
+Because colour cannot make a pure sample at the true base rate (§3.6 of the write-up),
+the method's real job is to **rank** candidates and hand the top of the list to a second,
+lensing-aware stage (light-curve modelling, imaging for multiple images, spectroscopy).
+`rank()` returns event indices best-first; the top of the list is far richer in real
+lensed SNe Ia than the pool.
+"""),
+    code('''
+order = clf.rank(test)                 # indices, best candidate first
+pool_rate = 100 * y.mean()
+for N in (20, 100, 500):
+    top = order[:N]
+    print(f"top {N:>4}: {int(y[top].sum()):>3} real lensed Ia  "
+          f"(purity {100*y[top].mean():4.0f}%  vs {pool_rate:.0f}% in the pool)")
+'''),
+    code('''
+# Enrichment curve: purity among the top-k as a function of k.
+ks = np.unique(np.geomspace(5, len(test), 40).astype(int))
+purity = [y[order[:k]].mean() for k in ks]
+fig, ax = plt.subplots(figsize=(6.4, 4))
+ax.plot(ks, 100 * np.array(purity), color="#1f5cc0", lw=2)
+ax.axhline(pool_rate, color="0.6", ls="--", lw=1, label="pool rate (no ranking)")
+ax.set_xscale("log"); ax.set_xlabel("candidates followed up (top-k, ranked)")
+ax.set_ylabel("purity of shortlist (%)"); ax.legend(frameon=False)
+ax.set_title("Ranking concentrates the real lensed SNe Ia at the top")
+fig.tight_layout()
+'''),
+    md("""
+## Running it on real cadence data
+
+On a machine with an LSST OpSim database (`CMSNE_OPSIM_DB` set), replace the synthetic
+sample above with real all-band photometry at the trigger epoch:
+
+```python
+from cmsne.multicolour import MultiColourGenerator
+gen = MultiColourGenerator(source="salt3")
+lensed_Ia = gen.generate_many(n=10000, kind="lensed",   z_range=(0.1, 1.0),
+                              abs_mag_avg=-19.4, abs_mag_sig=0.2)
+unlensed  = gen.generate_many(n=10000, kind="unlensed", z_range=(0.1, 1.0),
+                              abs_mag_avg=-19.4, abs_mag_sig=0.2)
+```
+
+Rate weights for a realistic mix come from `cmsne.multicolour.rate_weight`
+(class, redshift, magnification, source), which applies the literature-anchored
+`CC_TO_IA_RATE` and CC sub-type fractions. The production results in
+`docs/methods_and_results.md` use BlueBEAR arrays 52585403 / 52639521 (v5.3.2) and
+52781668 (v5.3.5), ~200k events each. The batch driver is `scripts/run_multicolour.py`.
+
+**Takeaway.** Colour alone is a fast, cadence-robust early trigger that flags the
+majority of lensed SNe Ia and beats the trailing image with weeks of lead — but at the
+true base rate it is a *prioritiser*, not a verdict. Rank, then follow up.
+"""),
+])
+
+for name, nb in [("04_colour_magnitude.ipynb", nb04), ("05_time_delays.ipynb", nb05), ("06_colour_classifier.ipynb", nb06)]:
     path = os.path.join(REPO, "notebooks", name)
     with open(path, "w") as f:
         json.dump(nb, f, indent=1)
