@@ -24,8 +24,18 @@ from .colour_magnitude import weighted_quantile
 # Adjacent ugrizy colours, matching cmsne.multicolour's feature names.
 COLOUR_KEYS = ['ug', 'gr', 'ri', 'iz', 'zy']
 
+# Brightness features recorded per event by cmsne.multicolour.event_multicolour:
+#   'peakmag'          -- brightest observed sample across all bands;
+#   'peakmag_fit'      -- parabola-fitted light-curve peak in the best-sampled band;
+#   'peakmag_firstdet' -- magnitude of the earliest detection.
+# The comparison in docs/methods_and_results.md (§3.8) found brightest-observed gives
+# the highest recovery (it beats a single-band fitted peak and the first-detected
+# magnitude), so it is the explicit default magnitude feature.
+MAGNITUDE_FEATURES = ('peakmag', 'peakmag_fit', 'peakmag_firstdet')
+DEFAULT_MAGNITUDE_FEATURE = 'peakmag'   # brightest-observed sample across all bands
 
-def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=('peakmag',)):
+
+def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
     """Stack ``events`` (dicts) into a feature matrix over ``keys`` (+ ``extra``).
 
     Missing entries become NaN, which the classifier treats as "band not observed".
@@ -42,7 +52,12 @@ class ColourClassifier:
     """Gradient-boosted colour classifier with a contamination-pinned threshold.
 
     :param keys: colour feature names to use.
-    :param include_peakmag: also use the (apparent) peak magnitude as a feature.
+    :param include_peakmag: also use an apparent-brightness feature (see
+        ``magnitude_feature``); set ``False`` for a colour-only classifier.
+    :param magnitude_feature: which brightness feature to use when
+        ``include_peakmag`` is set. Defaults to ``'peakmag'`` (brightest-observed
+        across all bands), the best of the three on test (see
+        :data:`MAGNITUDE_FEATURES` and docs/methods_and_results.md §3.8).
     :param target_fpr: contamination (false-positive rate) the optional hard
         decision threshold is set to, on the rate-weighted background. The boundary
         between lensed and unlensed is a broad gradient, not a sharp line, so prefer
@@ -53,10 +68,19 @@ class ColourClassifier:
     :param hgb: extra keyword args forwarded to ``HistGradientBoostingClassifier``.
     """
 
-    def __init__(self, keys=COLOUR_KEYS, include_peakmag=True, target_fpr=0.10,
+    def __init__(self, keys=COLOUR_KEYS, include_peakmag=True,
+                 magnitude_feature=DEFAULT_MAGNITUDE_FEATURE, target_fpr=0.10,
                  calibrate=True, **hgb):
         self.keys = list(keys)
-        self.extra = ('peakmag',) if include_peakmag else ()
+        if include_peakmag and magnitude_feature:
+            if magnitude_feature not in MAGNITUDE_FEATURES:
+                raise ValueError("magnitude_feature must be one of %r, got %r"
+                                 % (MAGNITUDE_FEATURES, magnitude_feature))
+            self.magnitude_feature = magnitude_feature
+            self.extra = (magnitude_feature,)
+        else:
+            self.magnitude_feature = None
+            self.extra = ()
         self.target_fpr = target_fpr
         self.calibrate = calibrate
         self.params = dict(max_depth=4, learning_rate=0.1, max_iter=300,

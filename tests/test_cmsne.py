@@ -646,6 +646,15 @@ fpr = float(np.mean(clf.predict(bg_ev)))
 check('separable colours: high recovery', rec > 0.8, round(rec, 3))
 check('threshold pins contamination near target', abs(fpr - 0.10) < 0.06, round(fpr, 3))
 check('NaN colours handled (no crash, finite scores)', np.all(np.isfinite(clf.score(sig_ev))))
+check('default magnitude feature is brightest-observed peakmag',
+      clf.magnitude_feature == 'peakmag' and clf.extra == ('peakmag',), (clf.magnitude_feature, clf.extra))
+check('magnitude_feature is selectable', ColourClassifier(magnitude_feature='peakmag_fit').extra == ('peakmag_fit',))
+check('include_peakmag=False -> colour-only', ColourClassifier(include_peakmag=False).extra == ())
+try:
+    ColourClassifier(magnitude_feature='nope'); _bad = False
+except ValueError:
+    _bad = True
+check('invalid magnitude_feature rejected', _bad)
 # a rate-weighted recovery call runs and stays in [0,1]
 rw = clf.recovery_rate(sig_ev, weights=np.abs(_rng.normal(1, 0.3, len(sig_ev))))
 check('weighted recovery in range', 0.0 <= rw <= 1.0, round(rw, 3))
