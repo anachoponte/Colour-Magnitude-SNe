@@ -205,12 +205,41 @@ anything marginally better on v5.3.5:
 
 The colour-only trigger does not hinge on one particular cadence realisation.
 
+### 3.8 Which brightness feature? Cross-band brightest beats a fitted peak
+
+The colour vector is optionally augmented by a single brightness feature. We recorded
+three candidates for every event (`cmsne.multicolour.event_multicolour`) and compared
+them as the magnitude input, calibrated throughout:
+
+- **first-detected** — the magnitude of the earliest detection (available soonest, but
+  the faintest and noisiest; median lensed-Ia magnitude 21.76);
+- **fitted peak** — a parabola fitted to the best-sampled band, interpolating the true
+  peak between visits (`cmsne.lightcurve.fitted_peak_magnitude`; median 20.77);
+- **brightest observed** — the brightest sampled point across *all* bands (median 20.42).
+
+| magnitude feature       | recovery, 5 colours | recovery, 5 colours + evolution |
+|-------------------------|:-------------------:|:-------------------------------:|
+| *(none)*                | 0.319               | —     |
+| first-detected          | 0.365               | 0.440 |
+| fitted peak             | 0.384               | 0.462 |
+| **brightest observed**  | **0.406**           | **0.481** |
+
+Any brightness proxy helps (recovery rises from 0.319), and the fitted peak clearly
+beats the first-detected magnitude — but it does **not** beat the brightest-observed
+sample, which is the best of the three. The single-band parabola fit trades away
+cross-band information: the brightest-observed feature captures the brightest point in
+*whichever* band the cadence happened to sample, whereas the fit is confined to one band
+and so lands ~0.35 mag fainter on average. The production pipeline therefore keeps
+**brightest observed** as the default magnitude feature (`peakmag`); `peakmag_fit` and
+`peakmag_firstdet` are recorded alongside it for this comparison.
+
 ## 4. Limitations and future work
 
-- **Fitted peak magnitude.** The magnitude feature is currently the first-*detected*
-  magnitude, not the light-curve peak (a quirk of the photometry extraction), so it is
-  noisier and fainter-biased. Using a fitted peak (`cmsne.lightcurve.fitted_peak_magnitude`)
-  is the main open refinement.
+- **The magnitude feature is settled (not an open item).** An earlier draft flagged the
+  brightness input as a first-detected placeholder to be replaced by a fitted peak. On
+  test (§3.8) the pipeline was already using the *brightest-observed* magnitude, and that
+  beats both the first-detected value and a single-band fitted peak, so no change is
+  warranted. A multi-band SED-aware peak fit could be revisited but is unlikely to help.
 - **Train/eval realism.** The boundary-shape study (§3.1) is fit on idealised model light
   curves; the multi-colour results (§3.2–3.7) put every class through a real cadence.
 - **Achromatic degeneracy is fundamental.** No colour feature can separate a lensed from
