@@ -614,7 +614,10 @@ def make(n, means, mag_mean, mag_scatter, colour_scatter, drop=0.6):
         for c in COLS:                      # a real cadence usually misses most colours
             if rng.random() < drop:
                 e[c] = np.nan
-        e["peakmag"] = float(rng.normal(mag_mean, mag_scatter))
+        pk = float(rng.normal(mag_mean, mag_scatter))
+        e["peakmag"] = pk                                              # brightest observed (all bands)
+        e["peakmag_fit"] = pk + float(abs(rng.normal(0, 0.25)))        # single-band fit: a little fainter/noisier
+        e["peakmag_firstdet"] = pk + float(abs(rng.normal(0.6, 0.4)))  # earliest detection: on the rise, fainter
         ev.append(e)
     return ev
 
@@ -649,6 +652,27 @@ bg_tr, bg_te = uIa_tr + cc_tr, uIa_te + cc_te
 clf = ColourClassifier(target_fpr=0.10).fit(sig_tr, bg_tr)
 print(f"recovery of lensed SN Ia at 10% contamination (held-out): "
       f"{clf.recovery_rate(sig_te):.2f}")
+'''),
+    md("""
+### Choosing the magnitude feature
+
+`event_multicolour` records three brightness features and `ColourClassifier` selects one
+via `magnitude_feature` (default `'peakmag'`). On the production data the
+**brightest-observed** sample wins — a single-band fitted peak and the first-detected
+magnitude both do worse (see `docs/methods_and_results.md` §3.8). The same ordering shows
+up on this synthetic sample, where the fitted value sits a little fainter than the
+brightest sample and the first-detected value fainter still.
+"""),
+    code('''
+from cmsne.classifier import MAGNITUDE_FEATURES, DEFAULT_MAGNITUDE_FEATURE
+print("options:", MAGNITUDE_FEATURES, "  default:", DEFAULT_MAGNITUDE_FEATURE, "\\n")
+
+colour_only = ColourClassifier(include_peakmag=False, target_fpr=0.10).fit(sig_tr, bg_tr)
+print(f"{'colour-only (no mag)':>26}: recovery {colour_only.recovery_rate(sig_te):.2f}")
+for mf in MAGNITUDE_FEATURES:
+    c = ColourClassifier(magnitude_feature=mf, target_fpr=0.10).fit(sig_tr, bg_tr)
+    tag = "   <- default (best on production)" if mf == DEFAULT_MAGNITUDE_FEATURE else ""
+    print(f"{'+ ' + mf:>26}: recovery {c.recovery_rate(sig_te):.2f}{tag}")
 '''),
     md("""
 ## 2. Calibrated probability and the true base rate
