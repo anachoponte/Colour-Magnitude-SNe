@@ -17,6 +17,7 @@ methodology questions" #1).
 import numpy as np
 
 from .multicolour import MultiColourGenerator, band_photometry, _colours, ADJ_COLOURS
+from .classifier import ColourClassifier
 
 # Canonical Δt-since-trigger checkpoints [observer-days], reusing the exact
 # values already validated in the waiting-time study (see
@@ -89,3 +90,28 @@ class TrajectoryGenerator(MultiColourGenerator):
 
     def _event_features(self, lc, evolution_days, window):
         return event_trajectory(lc, self.grid, window)
+
+
+class TrajectoryClassifier(ColourClassifier):
+    """:class:`cmsne.classifier.ColourClassifier`, but trained on the full
+    N-point trajectory schema (:data:`TRAJECTORY_COLOUR_KEYS` +
+    :data:`TRAJECTORY_MAGNITUDE_KEYS`) instead of a single colour + one
+    magnitude feature.
+
+    "Updating as observations arrive" (see the design spec's resolution of
+    sequential non-independence) means re-scoring *this one* trained model
+    with a feature vector that has more of its later-Δt entries filled in --
+    never chaining independent per-epoch probabilities.
+
+    Reuses :class:`ColourClassifier`'s fit/score/probability/rank/predict/
+    recovery_rate unchanged; only the feature schema differs, so
+    ``include_peakmag``'s single-feature assumption is bypassed by setting
+    ``self.extra`` directly to the full per-step magnitude tuple.
+    """
+
+    def __init__(self, keys=TRAJECTORY_COLOUR_KEYS, target_fpr=0.10,
+                 calibrate=True, **hgb):
+        super().__init__(keys=keys, include_peakmag=False,
+                         target_fpr=target_fpr, calibrate=calibrate, **hgb)
+        self.magnitude_feature = None
+        self.extra = TRAJECTORY_MAGNITUDE_KEYS

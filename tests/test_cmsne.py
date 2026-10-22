@@ -658,6 +658,41 @@ check('TrajectoryGenerator inherits MultiColourGenerator API',
 check('TrajectoryGenerator._event_features uses the trajectory schema',
       set(_tg._event_features(_lct, 15.0, 5.0)) >= {'gr_d0', 'peakmag_d0', 'gr_d60'})
 
+print('\n=== TrajectoryClassifier: cumulative multi-step scoring ===')
+from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS
+_rngt = np.random.default_rng(11)
+def _mk_traj(n, mu, n_steps_seen):
+    """n events; colours at the first n_steps_seen grid steps set, later NaN."""
+    out = []
+    for _ in range(n):
+        e = {}
+        for i, k in enumerate(TRAJECTORY_COLOUR_KEYS):
+            step = i // 5     # 5 colours per grid step, grid order
+            e[k] = float(_rngt.normal(mu, 0.4)) if step < n_steps_seen else np.nan
+        for i, k in enumerate(TRAJECTORY_MAGNITUDE_KEYS):
+            e[k] = float(_rngt.normal(22, 1)) if i < n_steps_seen else np.nan
+        out.append(e)
+    return out
+sig_t = _mk_traj(1500, 0.3, 5); bg_t = _mk_traj(3000, 0.0, 5)
+tclf = TrajectoryClassifier(target_fpr=0.10).fit(sig_t, bg_t)
+rec_t = tclf.recovery_rate(sig_t)
+fpr_t = float(np.mean(tclf.predict(bg_t)))
+check('trajectory classifier separates a separable signal', rec_t > 0.8, round(rec_t, 3))
+check('trajectory classifier threshold pins contamination', abs(fpr_t - 0.10) < 0.06, round(fpr_t, 3))
+check('trajectory classifier uses the full step schema',
+      tclf.keys == TRAJECTORY_COLOUR_KEYS and tclf.extra == TRAJECTORY_MAGNITUDE_KEYS)
+
+partial = _mk_traj(5, 0.3, 2)
+check('partial trajectory (early steps only) scores without crashing',
+      np.all(np.isfinite(tclf.score(partial))))
+
+one_step = _mk_traj(200, 0.3, 1)
+five_step = _mk_traj(200, 0.3, 5)
+p_one = tclf.probability(one_step).mean()
+p_five = tclf.probability(five_step).mean()
+check('more observed steps -> more confident posterior for true signal',
+      p_five > p_one, (round(p_one, 3), round(p_five, 3)))
+
 print('\n=== ColourClassifier: multi-colour flexible boundary ===')
 from cmsne.classifier import ColourClassifier, colour_feature_matrix
 _rng = np.random.default_rng(7)
