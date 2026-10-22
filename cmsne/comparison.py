@@ -46,13 +46,11 @@ def compare_classifiers(static_clf, trajectory_clf, signal_trajectories, backgro
        ``signal_trajectories``/``background_trajectories`` must already
        expose BOTH schemas -- the static classifier's two-point keys
        (``gr``, ``peakmag``) and the full trajectory keys (``gr_d0``, ...,
-       ``peakmag_d60``) -- on the same events. No production generator in
-       this repo currently produces that merged schema at scale; only this
-       module's own unit test builds it synthetically. Generating it for a
-       real BlueBEAR-scale run (e.g. by running both
-       :func:`cmsne.multicolour.event_multicolour` and
-       :func:`cmsne.trajectory.event_trajectory` on the same simulated
-       light curve) is follow-up work, not covered by this plan.
+       ``peakmag_d60``) -- on the same events. Use
+       :class:`cmsne.trajectory.DualSchemaGenerator` (or
+       ``scripts/run_dual_schema.py`` for a BlueBEAR-scale production run)
+       to generate such events from a real OpSim cadence; this module's own
+       unit test builds a smaller synthetic version of the same schema.
 
     :param static_clf: a fitted :class:`cmsne.classifier.ColourClassifier`
         (the existing two-point method, unchanged).
