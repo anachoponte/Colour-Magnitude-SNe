@@ -780,6 +780,25 @@ p_batch = naive_sequential_posterior(np.array([[0.9, 0.9], [0.1, 0.1]]))
 check('batched 2D input returns one posterior per event',
       p_batch.shape == (2,) and p_batch[0] > 0.5 > p_batch[1], p_batch.tolist())
 
+print('\n=== contours: evolving posterior surface ===')
+from cmsne import contours as ctr
+_rngc = np.random.default_rng(3)
+def _mk_cm(n, mu):
+    return [{'gr_d0': float(_rngc.normal(mu, 0.3)), 'peakmag_d0': float(_rngc.normal(22, 1)),
+            'gr_d14': float(_rngc.normal(mu, 0.3)), 'peakmag_d14': float(_rngc.normal(22, 1))}
+           for _ in range(n)]
+sig_c, bg_c = _mk_cm(300, 1.0), _mk_cm(600, 0.0)
+cg, mg, pg, cclf = ctr.posterior_surface(sig_c, bg_c, 'gr_d0', 'peakmag_d0', n=20)
+check('posterior_surface returns (n,n) grids', cg.shape == (20, 20) and pg.shape == (20, 20), pg.shape)
+check('probability grid is bounded in [0,1]', np.all((pg >= 0) & (pg <= 1)))
+check('higher colour region is more lensed-like (separable signal)',
+      pg[:, -1].mean() > pg[:, 0].mean(), (round(pg[:, -1].mean(), 3), round(pg[:, 0].mean(), 3)))
+
+surfaces = ctr.evolving_contours(sig_c, bg_c, 'gr', grid=(0.0, 14.0), n=15)
+check('evolving_contours returns one surface per grid step', set(surfaces) == {0.0, 14.0})
+check('each evolving-contour entry has the 4-tuple shape',
+      all(len(v) == 4 and v[2].shape == (15, 15) for v in surfaces.values()))
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
