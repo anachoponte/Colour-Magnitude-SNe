@@ -830,6 +830,30 @@ check('naive-vs-trajectory divergence is non-negative and finite',
       np.isfinite(result['naive_vs_trajectory_mean_abs_diff']) and
       result['naive_vs_trajectory_mean_abs_diff'] >= 0.0, result['naive_vs_trajectory_mean_abs_diff'])
 
+print('\n=== trajectory: dual-schema generation (static + trajectory merged) ===')
+_lcd = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0])
+_fd = traj.event_dual_schema(_lcd, evolution_days=15.0, grid=(0.0, 20.0), window=5.0)
+check('dual schema has the static multicolour keys',
+      'peakmag' in _fd and 'gr' in _fd and 'n_bands' in _fd)
+check('dual schema has the trajectory keys', 'gr_d0' in _fd and 'peakmag_d20' in _fd)
+check('shared trigger_day key matches both halves',
+      _fd['trigger_day'] == mcol.event_multicolour(_lcd, 15.0, 5.0)['trigger_day'] ==
+      traj.event_trajectory(_lcd, (0.0, 20.0), 5.0)['trigger_day'])
+check('static gr colour matches standalone event_multicolour',
+      np.isclose(_fd['gr'], mcol.event_multicolour(_lcd, 15.0, 5.0)['gr']))
+check('trajectory gr_d0 colour matches standalone event_trajectory',
+      np.isclose(_fd['gr_d0'], traj.event_trajectory(_lcd, (0.0, 20.0), 5.0)['gr_d0']))
+check('static gr (epoch=trigger) matches trajectory gr_d0 (same epoch)',
+      np.isclose(_fd['gr'], _fd['gr_d0']))
+check('no detections -> None',
+      traj.event_dual_schema(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+
+_dg = traj.DualSchemaGenerator()
+check('DualSchemaGenerator inherits MultiColourGenerator API',
+      hasattr(_dg, 'generate_one') and hasattr(_dg, 'generate_many'))
+check('DualSchemaGenerator._event_features uses the dual schema',
+      set(_dg._event_features(_lcd, 15.0, 5.0)) >= {'gr', 'peakmag', 'gr_d0', 'peakmag_d60'})
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
