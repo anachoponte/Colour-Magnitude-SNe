@@ -16,7 +16,7 @@ methodology questions" #1).
 
 import numpy as np
 
-from .multicolour import MultiColourGenerator, band_photometry, _colours, ADJ_COLOURS
+from .multicolour import MultiColourGenerator, band_photometry, _colours, ADJ_COLOURS, event_multicolour
 from .classifier import ColourClassifier
 
 # Canonical Δt-since-trigger checkpoints [observer-days], reusing the exact
@@ -90,6 +90,47 @@ class TrajectoryGenerator(MultiColourGenerator):
 
     def _event_features(self, lc, evolution_days, window):
         return event_trajectory(lc, self.grid, window)
+
+
+def event_dual_schema(lightcurve, evolution_days=15.0, grid=TRAJECTORY_GRID, window=5.0):
+    """Both the static two-point schema (:func:`cmsne.multicolour.event_multicolour`)
+    and the full N-point trajectory schema (:func:`event_trajectory`) for the
+    same light curve.
+
+    Closes the gap flagged in PR #14: no generator previously produced both
+    schemas on the same simulated event, so
+    :func:`cmsne.comparison.compare_classifiers` could only be exercised on a
+    hand-built synthetic test fixture. The two schemas share exactly one key,
+    ``trigger_day``, computed identically by both from the same light curve
+    (``trigger = days[detected].min()``), so merging the two dicts is safe --
+    no other key collides.
+
+    :return: merged dict, or ``None`` if either half found nothing detected.
+    """
+    static_feat = event_multicolour(lightcurve, evolution_days, window)
+    traj_feat = event_trajectory(lightcurve, grid, window)
+    if static_feat is None or traj_feat is None:
+        return None
+    return {**static_feat, **traj_feat}
+
+
+class DualSchemaGenerator(MultiColourGenerator):
+    """Like :class:`cmsne.multicolour.MultiColourGenerator`, but records BOTH
+    the static two-point schema and the full N-point trajectory schema
+    (:func:`event_dual_schema`) for every event -- the production generator
+    needed to run :func:`cmsne.comparison.compare_classifiers` on real,
+    simulated-at-scale data instead of only a synthetic test fixture.
+
+    Identical ``generate_one``/``generate_many`` API (inherited unchanged) --
+    only the per-event feature extraction differs.
+    """
+
+    def __init__(self, source='salt3', grid=TRAJECTORY_GRID):
+        super().__init__(source)
+        self.grid = grid
+
+    def _event_features(self, lc, evolution_days, window):
+        return event_dual_schema(lc, evolution_days, self.grid, window)
 
 
 class TrajectoryClassifier(ColourClassifier):
