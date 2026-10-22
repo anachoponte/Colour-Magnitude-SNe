@@ -624,6 +624,74 @@ check('n_bands counts bands at trigger', _f['n_bands'] == 2, _f['n_bands'])
 check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
 check('rate_weight dispatches by class',
       mcol.rate_weight('uIa', 0.3, 1.0) > 0 and mcol.rate_weight('sig', 0.3, 10.0) > 0)
+_mg = mcol.MultiColourGenerator()
+_mg_feat = _mg._event_features(_lc, 15.0, 5.0)
+_direct_feat = mcol.event_multicolour(_lc, 15.0, 5.0)
+check('MultiColourGenerator._event_features defaults to event_multicolour',
+      _mg_feat.keys() == _direct_feat.keys() and
+      np.isclose(_mg_feat['gr'], _direct_feat['gr']) and
+      np.isclose(_mg_feat['peakmag'], _direct_feat['peakmag']))
+
+print('\n=== trajectory: N-point colour-magnitude generation ===')
+from cmsne import trajectory as traj
+# g@2,r@3 detected at trigger; g brighter again @20, r follows @23.
+_lct = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0])
+_ft = traj.event_trajectory(_lct, grid=(0.0, 20.0), window=5.0)
+check('trigger epoch is first detection', _ft['trigger_day'] == 2.0, _ft['trigger_day'])
+check('colour at day 0 matches multicolour.event_multicolour',
+      np.isclose(_ft['gr_d0'], 0.5), _ft['gr_d0'])
+check('colour at day 20 uses the later epoch', np.isclose(_ft['gr_d20'], -1.0), _ft['gr_d20'])
+check('cumulative peakmag at day 0 is the trigger-time brightest',
+      np.isclose(_ft['peakmag_d0'], 21.5), _ft['peakmag_d0'])
+check('cumulative peakmag at day 20 improves (brighter point included)',
+      np.isclose(_ft['peakmag_d20'], 20.0), _ft['peakmag_d20'])
+check('no detections -> None',
+      traj.event_trajectory(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+check('TRAJECTORY_COLOUR_KEYS has 5 colours x 5 grid steps',
+      len(traj.TRAJECTORY_COLOUR_KEYS) == 25, len(traj.TRAJECTORY_COLOUR_KEYS))
+check('TRAJECTORY_MAGNITUDE_KEYS has one peakmag per grid step',
+      len(traj.TRAJECTORY_MAGNITUDE_KEYS) == 5)
+
+_tg = traj.TrajectoryGenerator()
+check('TrajectoryGenerator inherits MultiColourGenerator API',
+      hasattr(_tg, 'generate_one') and hasattr(_tg, 'generate_many'))
+check('TrajectoryGenerator._event_features uses the trajectory schema',
+      set(_tg._event_features(_lct, 15.0, 5.0)) >= {'gr_d0', 'peakmag_d0', 'gr_d60'})
+
+print('\n=== TrajectoryClassifier: cumulative multi-step scoring ===')
+from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS
+_rngt = np.random.default_rng(11)
+def _mk_traj(n, mu, n_steps_seen):
+    """n events; colours at the first n_steps_seen grid steps set, later NaN."""
+    out = []
+    for _ in range(n):
+        e = {}
+        for i, k in enumerate(TRAJECTORY_COLOUR_KEYS):
+            step = i // 5     # 5 colours per grid step, grid order
+            e[k] = float(_rngt.normal(mu, 0.4)) if step < n_steps_seen else np.nan
+        for i, k in enumerate(TRAJECTORY_MAGNITUDE_KEYS):
+            e[k] = float(_rngt.normal(22, 1)) if i < n_steps_seen else np.nan
+        out.append(e)
+    return out
+sig_t = _mk_traj(1500, 0.3, 5); bg_t = _mk_traj(3000, 0.0, 5)
+tclf = TrajectoryClassifier(target_fpr=0.10).fit(sig_t, bg_t)
+rec_t = tclf.recovery_rate(sig_t)
+fpr_t = float(np.mean(tclf.predict(bg_t)))
+check('trajectory classifier separates a separable signal', rec_t > 0.8, round(rec_t, 3))
+check('trajectory classifier threshold pins contamination', abs(fpr_t - 0.10) < 0.06, round(fpr_t, 3))
+check('trajectory classifier uses the full step schema',
+      tclf.keys == TRAJECTORY_COLOUR_KEYS and tclf.extra == TRAJECTORY_MAGNITUDE_KEYS)
+
+partial = _mk_traj(5, 0.3, 2)
+check('partial trajectory (early steps only) scores without crashing',
+      np.all(np.isfinite(tclf.score(partial))))
+
+one_step = _mk_traj(200, 0.3, 1)
+five_step = _mk_traj(200, 0.3, 5)
+p_one = tclf.probability(one_step).mean()
+p_five = tclf.probability(five_step).mean()
+check('more observed steps -> more confident posterior for true signal',
+      p_five > p_one, (round(p_one, 3), round(p_five, 3)))
 
 print('\n=== ColourClassifier: multi-colour flexible boundary ===')
 from cmsne.classifier import ColourClassifier, colour_feature_matrix
@@ -696,6 +764,71 @@ check('fitted peak recovers the parabola vertex', abs(peak - 21.0) < 0.05, round
 check('fitted peak brighter than first detection', peak < pk_mag[0], (round(peak, 2), pk_mag[0]))
 check('fitted peak NaN when nothing detected',
       np.isnan(lcmod.fitted_peak_magnitude(type('L', (), {'obs_days': np.array([1.]), 'obs_mag': np.array([np.inf]), 'obs_filters': np.array(['r'])})())))
+
+print('\n=== comparison: naive sequential-multiplication baseline ===')
+from cmsne.comparison import naive_sequential_posterior
+p3 = naive_sequential_posterior(np.array([[0.9, 0.9, 0.9]]))
+check('three agreeing high-confidence steps combine to near-certainty',
+      p3[0] > 0.95, round(float(p3[0]), 4))
+p_half = naive_sequential_posterior(np.array([[0.5, 0.5, 0.5]]))
+check('all-uninformative (p=0.5) steps leave the posterior at 0.5',
+      np.isclose(p_half[0], 0.5), float(p_half[0]))
+p_nan = naive_sequential_posterior(np.array([[0.9, np.nan, np.nan]]))
+check('NaN (unobserved) steps are skipped, not treated as evidence',
+      np.isclose(p_nan[0], 0.9), float(p_nan[0]))
+p_batch = naive_sequential_posterior(np.array([[0.9, 0.9], [0.1, 0.1]]))
+check('batched 2D input returns one posterior per event',
+      p_batch.shape == (2,) and p_batch[0] > 0.5 > p_batch[1], p_batch.tolist())
+
+print('\n=== contours: evolving posterior surface ===')
+from cmsne import contours as ctr
+_rngc = np.random.default_rng(3)
+def _mk_cm(n, mu):
+    return [{'gr_d0': float(_rngc.normal(mu, 0.3)), 'peakmag_d0': float(_rngc.normal(22, 1)),
+            'gr_d14': float(_rngc.normal(mu, 0.3)), 'peakmag_d14': float(_rngc.normal(22, 1))}
+           for _ in range(n)]
+sig_c, bg_c = _mk_cm(300, 1.0), _mk_cm(600, 0.0)
+cg, mg, pg, cclf = ctr.posterior_surface(sig_c, bg_c, 'gr_d0', 'peakmag_d0', n=20)
+check('posterior_surface returns (n,n) grids', cg.shape == (20, 20) and pg.shape == (20, 20), pg.shape)
+check('probability grid is bounded in [0,1]', np.all((pg >= 0) & (pg <= 1)))
+check('higher colour region is more lensed-like (separable signal)',
+      pg[:, -1].mean() > pg[:, 0].mean(), (round(pg[:, -1].mean(), 3), round(pg[:, 0].mean(), 3)))
+
+surfaces = ctr.evolving_contours(sig_c, bg_c, 'gr', grid=(0.0, 14.0), n=15)
+check('evolving_contours returns one surface per grid step', set(surfaces) == {0.0, 14.0})
+check('each evolving-contour entry has the 4-tuple shape',
+      all(len(v) == 4 and v[2].shape == (15, 15) for v in surfaces.values()))
+
+print('\n=== comparison: static vs trajectory vs naive harness ===')
+from cmsne.comparison import compare_classifiers
+from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID
+from cmsne.classifier import ColourClassifier
+
+_rngh = np.random.default_rng(5)
+def _mk_full(n, mu):
+    """Events exposing BOTH the static 2-point schema and the trajectory schema."""
+    out = []
+    for _ in range(n):
+        e = {'gr': float(_rngh.normal(mu, 0.4)), 'peakmag': float(_rngh.normal(22, 1))}
+        for day in TRAJECTORY_GRID:
+            suffix = f'_d{int(day)}'
+            for colour in ('ug', 'gr', 'ri', 'iz', 'zy'):
+                e[f'{colour}{suffix}'] = float(_rngh.normal(mu, 0.4))
+            e[f'peakmag{suffix}'] = float(_rngh.normal(22, 1))
+        out.append(e)
+    return out
+
+sig_h, bg_h = _mk_full(400, 1.2), _mk_full(800, 0.0)
+static_clf = ColourClassifier(keys=['gr'], target_fpr=0.10).fit(sig_h, bg_h)
+traj_clf = TrajectoryClassifier(target_fpr=0.10).fit(sig_h, bg_h)
+result = compare_classifiers(static_clf, traj_clf, sig_h, bg_h, step_colour_key='gr')
+check('harness reports all three headline metrics',
+      set(result) == {'static_recovery', 'trajectory_recovery', 'naive_vs_trajectory_mean_abs_diff'})
+check('both recoveries are plausible for a separable signal',
+      result['static_recovery'] > 0.5 and result['trajectory_recovery'] > 0.5, result)
+check('naive-vs-trajectory divergence is non-negative and finite',
+      np.isfinite(result['naive_vs_trajectory_mean_abs_diff']) and
+      result['naive_vs_trajectory_mean_abs_diff'] >= 0.0, result['naive_vs_trajectory_mean_abs_diff'])
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:

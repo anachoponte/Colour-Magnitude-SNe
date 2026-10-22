@@ -1,0 +1,60 @@
+{
+  "planPath": "docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: Trajectory generation layer",
+      "status": "completed",
+      "description": "**Goal:** Extend `cmsne.multicolour`'s two-point colour generator into an N-point \u0394t-since-trigger trajectory generator, reusing its OpSim/model simulation plumbing unchanged.\n\n**Files:**\n- Modify: `cmsne/multicolour.py` (extract a one-line hook method from `MultiColourGenerator.generate_one`)\n- Create: `cmsne/trajectory.py`\n- Test: `tests/test_cmsne.py` (append after the existing `=== multicolour: all-band photometry extraction ===` section, i.e. after line 626)\n\n**Acceptance Criteria:**\n- [ ] `MultiColourGenerator`'s existing public behaviour (`generate_one`, `generate_many`, their outputs) is byte-for-byte unchanged -- the hook's default implementation calls `event_multicolour` exactly as before.\n- [ ] `cmsne.trajectory.event_trajectory(lightcurve, grid, window)` returns a dict with one colour key `'{colour}{suffix}'` per `(colour, grid step)` pair and one `'peakmag{suffix}'` per grid step, where `peakmag{suffix}` is the **cumulative** brightest magnitude observed through that step (not the eventual global peak), or `None` if nothing was ever detected.\n- [ ] `cmsne.trajectory.TrajectoryGenerator` is a `MultiColourGenerator` subclass that produces trajectory features via the same `generate_one`/`generate_many` call path, with no duplicated simulation code.\n\n**Verify:** `python tests/test_cmsne.py` \u2192 all checks pass, in particular the new `=== trajectory: N-point colour-magnitude generation ===` section, with no new failures.\n\nFull code for both files and the test additions is written out in full in `docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md`, Task 1 -- copy it verbatim; no placeholders.\n\n```json:metadata\n{\"files\": [\"cmsne/multicolour.py\", \"cmsne/trajectory.py\", \"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"MultiColourGenerator public behaviour unchanged\", \"event_trajectory returns correctly-keyed dict or None\", \"TrajectoryGenerator reuses generate_one/generate_many unchanged\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: Trajectory classifier",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** Add `TrajectoryClassifier`, a `ColourClassifier` subclass trained on the full N-point trajectory schema, so \"updating probability as observations accumulate\" is re-scoring one trained model with a longer feature vector rather than chaining independent per-epoch posteriors.\n\n**Files:**\n- Modify: `cmsne/trajectory.py` (append the new class)\n- Test: `tests/test_cmsne.py` (append after Task 1's trajectory section)\n\n**Acceptance Criteria:**\n- [ ] `TrajectoryClassifier` reuses `ColourClassifier.fit/score/probability/rank/predict/recovery_rate` completely unchanged; `cmsne/classifier.py` itself is not modified.\n- [ ] `TrajectoryClassifier` trains on `TRAJECTORY_COLOUR_KEYS` + `TRAJECTORY_MAGNITUDE_KEYS` and handles events with NaN at later, not-yet-observed grid steps without error.\n- [ ] Scoring the same signal class with more grid steps revealed yields a more confident (higher) posterior on average than with fewer steps revealed, demonstrating the \"re-score with a longer vector\" update mechanism.\n\n**Verify:** `python tests/test_cmsne.py` \u2192 all checks pass, in particular `=== TrajectoryClassifier: cumulative multi-step scoring ===`.\n\nFull code is written out in full in `docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md`, Task 2 -- copy it verbatim; no placeholders.\n\n```json:metadata\n{\"files\": [\"cmsne/trajectory.py\", \"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"TrajectoryClassifier reuses ColourClassifier methods unchanged\", \"classifier.py not modified\", \"handles NaN later steps without error\", \"more revealed steps -> higher mean posterior for true signal\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Naive sequential-multiplication baseline",
+      "status": "completed",
+      "blockedBy": [
+        2
+      ],
+      "description": "**Goal:** Add a deliberately-wrong naive-Bayes odds-multiplication function, used only to quantify (in Task 5) how much that approach overstates confidence relative to the jointly-trained `TrajectoryClassifier`.\n\n**Files:**\n- Create: `cmsne/comparison.py`\n- Test: `tests/test_cmsne.py` (append after Task 2's section)\n\n**Acceptance Criteria:**\n- [ ] `naive_sequential_posterior` combines per-step probabilities via an odds product, skipping (not penalising) NaN/unobserved steps.\n- [ ] It never raises a `RuntimeWarning` from `log`/division on NaN input (masked before any `log` call).\n- [ ] It accepts a 2D `(n_events, n_steps)` array and returns one combined posterior per event.\n\n**Verify:** `python tests/test_cmsne.py` \u2192 all checks pass, in particular `=== comparison: naive sequential-multiplication baseline ===`, with no warnings printed to stderr.\n\nFull code is written out in full in `docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md`, Task 3 -- copy it verbatim; no placeholders.\n\n```json:metadata\n{\"files\": [\"cmsne/comparison.py\", \"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"odds-product combination skipping NaN steps\", \"no RuntimeWarning from log/division on NaN\", \"2D array in, 1D array out\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: CMD contour / posterior-surface layer",
+      "status": "completed",
+      "blockedBy": [
+        1,
+        3
+      ],
+      "description": "**Goal:** Add the \"evolving probability density contour\" diagnostic: at each \u0394t grid step, fit a 2-feature classifier on one colour + its matching cumulative magnitude, and evaluate its posterior over a mesh.\n\n**Files:**\n- Create: `cmsne/contours.py`\n- Test: `tests/test_cmsne.py` (append after Task 3's section)\n\n**Acceptance Criteria:**\n- [ ] `posterior_surface` fits without touching `cmsne/classifier.py` (bypasses the `magnitude_feature` validation by setting `clf.extra`/`clf.magnitude_feature` directly, the same pattern as `TrajectoryClassifier`).\n- [ ] `posterior_surface` returns `(n, n)` grids with the probability grid bounded in `[0, 1]`.\n- [ ] `evolving_contours` produces one surface per requested grid step, keyed by that step's day value.\n\n**Verify:** `python tests/test_cmsne.py` \u2192 all checks pass, in particular `=== contours: evolving posterior surface ===`.\n\nFull code is written out in full in `docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md`, Task 4 -- copy it verbatim; no placeholders.\n\n```json:metadata\n{\"files\": [\"cmsne/contours.py\", \"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"posterior_surface bypasses classifier.py validation via construct-then-override\", \"returns (n,n) grids bounded in [0,1]\", \"evolving_contours keyed by grid-step day\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: Comparison harness",
+      "status": "completed",
+      "blockedBy": [
+        2,
+        3,
+        4
+      ],
+      "description": "**Goal:** Benchmark the static `ColourClassifier`, the new `TrajectoryClassifier`, and the naive baseline side by side on the same held-out events, producing the headline numbers the whole design exists to get.\n\n**Files:**\n- Modify: `cmsne/comparison.py` (append `compare_classifiers`)\n- Test: `tests/test_cmsne.py` (append after Task 4's section)\n\n**Acceptance Criteria:**\n- [ ] `compare_classifiers` reports `static_recovery`, `trajectory_recovery` (both at the same `target_fpr`), and `naive_vs_trajectory_mean_abs_diff`.\n- [ ] It fits one single-colour `ColourClassifier` per grid step internally (reusing the same construct-then-override pattern as Task 4) to produce the naive baseline's per-step inputs -- no duplicated step-classifier logic beyond that.\n- [ ] All three numbers are finite and in sane ranges on a separable synthetic population.\n\n**Verify:** `python tests/test_cmsne.py` \u2192 all checks pass, in particular `=== comparison: static vs trajectory vs naive harness ===`.\n\nFull code is written out in full in `docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md`, Task 5 -- copy it verbatim; no placeholders.\n\n```json:metadata\n{\"files\": [\"cmsne/comparison.py\", \"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"reports static_recovery, trajectory_recovery, naive_vs_trajectory_mean_abs_diff\", \"reuses construct-then-override per-step classifier pattern\", \"all three metrics finite and sane on separable synthetic data\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: BlueBEAR trajectory production script",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** A production-scale trajectory generation script mirroring `scripts/run_multicolour.py`, so the trajectory population can actually be generated at scale on BlueBEAR (no OpSim DB is available locally).\n\n**Files:**\n- Create: `scripts/run_trajectory.py`\n- Create: `scripts/run_trajectory_bluebear.sh`\n\n**Acceptance Criteria:**\n- [ ] `scripts/run_trajectory.py` uses the identical `CLASSES` table as `scripts/run_multicolour.py` (same classes, rates, abs-mag distributions), so the two productions cover the same population and are directly comparable.\n- [ ] It uses `cmsne.trajectory.TrajectoryGenerator` in place of `cmsne.multicolour.MultiColourGenerator`, with no other behavioural difference from `run_multicolour.py`'s CLI/manifest/output conventions.\n- [ ] The script imports and parses `--help` successfully without requiring an OpSim database connection (DB access only happens inside `run_class`, not at import or arg-parse time).\n\n**Verify:**\n- `python scripts/run_trajectory.py --help` \u2192 prints usage/help text, exits 0, no OpSim DB required.\n- `bash -n scripts/run_trajectory_bluebear.sh` \u2192 no output, exit 0 (syntax check).\n\nFull code for both files is written out in full in `docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md`, Task 6 -- copy it verbatim; no placeholders.\n\n```json:metadata\n{\"files\": [\"scripts/run_trajectory.py\", \"scripts/run_trajectory_bluebear.sh\"], \"verifyCommand\": \"python scripts/run_trajectory.py --help && bash -n scripts/run_trajectory_bluebear.sh\", \"acceptanceCriteria\": [\"identical CLASSES table to run_multicolour.py\", \"uses TrajectoryGenerator in place of MultiColourGenerator\", \"--help works without OpSim DB\"], \"modelTier\": \"mechanical\"}\n```"
+    }
+  ],
+  "lastUpdated": "2026-10-22T15:26:00Z"
+}

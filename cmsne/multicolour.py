@@ -175,12 +175,23 @@ class MultiColourGenerator:
         if lc is None:
             return None
 
-        feat = event_multicolour(lc, evolution_days, window)
+        feat = self._event_features(lc, evolution_days, window)
         if feat is None:
             return None
         feat['z'] = z
         feat['magnification'] = magnification
         return feat
+
+    def _event_features(self, lc, evolution_days, window):
+        """Hook for the feature dict extracted from one light curve.
+
+        Overridden by :class:`cmsne.trajectory.TrajectoryGenerator` to extract
+        an N-point trajectory instead of the two-point (trigger,
+        trigger+evolution_days) vector. Kept as a method (not a free function
+        call) so subclasses can swap the extraction logic without duplicating
+        :meth:`generate_one`'s OpSim/model plumbing.
+        """
+        return event_multicolour(lc, evolution_days, window)
 
     def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
                       magnification_range=(2.0, 50.0),
