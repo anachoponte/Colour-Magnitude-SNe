@@ -624,6 +624,39 @@ check('n_bands counts bands at trigger', _f['n_bands'] == 2, _f['n_bands'])
 check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
 check('rate_weight dispatches by class',
       mcol.rate_weight('uIa', 0.3, 1.0) > 0 and mcol.rate_weight('sig', 0.3, 10.0) > 0)
+_mg = mcol.MultiColourGenerator()
+_mg_feat = _mg._event_features(_lc, 15.0, 5.0)
+_direct_feat = mcol.event_multicolour(_lc, 15.0, 5.0)
+check('MultiColourGenerator._event_features defaults to event_multicolour',
+      _mg_feat.keys() == _direct_feat.keys() and
+      np.isclose(_mg_feat['gr'], _direct_feat['gr']) and
+      np.isclose(_mg_feat['peakmag'], _direct_feat['peakmag']))
+
+print('\n=== trajectory: N-point colour-magnitude generation ===')
+from cmsne import trajectory as traj
+# g@2,r@3 detected at trigger; g brighter again @20, r follows @23.
+_lct = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0])
+_ft = traj.event_trajectory(_lct, grid=(0.0, 20.0), window=5.0)
+check('trigger epoch is first detection', _ft['trigger_day'] == 2.0, _ft['trigger_day'])
+check('colour at day 0 matches multicolour.event_multicolour',
+      np.isclose(_ft['gr_d0'], 0.5), _ft['gr_d0'])
+check('colour at day 20 uses the later epoch', np.isclose(_ft['gr_d20'], -1.0), _ft['gr_d20'])
+check('cumulative peakmag at day 0 is the trigger-time brightest',
+      np.isclose(_ft['peakmag_d0'], 21.5), _ft['peakmag_d0'])
+check('cumulative peakmag at day 20 improves (brighter point included)',
+      np.isclose(_ft['peakmag_d20'], 20.0), _ft['peakmag_d20'])
+check('no detections -> None',
+      traj.event_trajectory(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+check('TRAJECTORY_COLOUR_KEYS has 5 colours x 5 grid steps',
+      len(traj.TRAJECTORY_COLOUR_KEYS) == 25, len(traj.TRAJECTORY_COLOUR_KEYS))
+check('TRAJECTORY_MAGNITUDE_KEYS has one peakmag per grid step',
+      len(traj.TRAJECTORY_MAGNITUDE_KEYS) == 5)
+
+_tg = traj.TrajectoryGenerator()
+check('TrajectoryGenerator inherits MultiColourGenerator API',
+      hasattr(_tg, 'generate_one') and hasattr(_tg, 'generate_many'))
+check('TrajectoryGenerator._event_features uses the trajectory schema',
+      set(_tg._event_features(_lct, 15.0, 5.0)) >= {'gr_d0', 'peakmag_d0', 'gr_d60'})
 
 print('\n=== ColourClassifier: multi-colour flexible boundary ===')
 from cmsne.classifier import ColourClassifier, colour_feature_matrix
