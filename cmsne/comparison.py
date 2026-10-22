@@ -42,6 +42,18 @@ def compare_classifiers(static_clf, trajectory_clf, signal_trajectories, backgro
     """Benchmark the static, trajectory, and naive-multiplication approaches
     on the same held-out trajectory events (design spec section D).
 
+    .. note::
+       ``signal_trajectories``/``background_trajectories`` must already
+       expose BOTH schemas -- the static classifier's two-point keys
+       (``gr``, ``peakmag``) and the full trajectory keys (``gr_d0``, ...,
+       ``peakmag_d60``) -- on the same events. No production generator in
+       this repo currently produces that merged schema at scale; only this
+       module's own unit test builds it synthetically. Generating it for a
+       real BlueBEAR-scale run (e.g. by running both
+       :func:`cmsne.multicolour.event_multicolour` and
+       :func:`cmsne.trajectory.event_trajectory` on the same simulated
+       light curve) is follow-up work, not covered by this plan.
+
     :param static_clf: a fitted :class:`cmsne.classifier.ColourClassifier`
         (the existing two-point method, unchanged).
     :param trajectory_clf: a fitted
@@ -52,10 +64,15 @@ def compare_classifiers(static_clf, trajectory_clf, signal_trajectories, backgro
     :param step_colour_key: which adjacent colour's per-step probabilities
         feed the naive baseline (e.g. ``'gr'`` -> ``gr_d0``, ``gr_d3``, ...).
     :return: dict of headline metrics: ``static_recovery``,
-        ``trajectory_recovery`` (both at ``target_fpr``), and
-        ``naive_vs_trajectory_mean_abs_diff`` (how much the naive baseline's
-        posterior diverges from the jointly trained classifier's -- the
-        quantified overconfidence from resolution #2).
+        ``trajectory_recovery`` -- each at *that classifier's own* fitted
+        threshold (set when ``static_clf``/``trajectory_clf`` were
+        constructed and fit, not re-pinned to this call's ``target_fpr``;
+        pass classifiers already fit at the contamination you want to
+        compare at) -- and ``naive_vs_trajectory_mean_abs_diff`` (how much
+        the naive baseline's posterior diverges from the jointly trained
+        classifier's -- the quantified overconfidence from resolution #2).
+        ``target_fpr`` itself only governs the per-step single-colour
+        classifiers fit internally to build the naive baseline's inputs.
     """
     from .trajectory import TRAJECTORY_GRID, _step_suffix
     from .classifier import ColourClassifier
