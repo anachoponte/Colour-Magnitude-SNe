@@ -765,6 +765,21 @@ check('fitted peak brighter than first detection', peak < pk_mag[0], (round(peak
 check('fitted peak NaN when nothing detected',
       np.isnan(lcmod.fitted_peak_magnitude(type('L', (), {'obs_days': np.array([1.]), 'obs_mag': np.array([np.inf]), 'obs_filters': np.array(['r'])})())))
 
+print('\n=== comparison: naive sequential-multiplication baseline ===')
+from cmsne.comparison import naive_sequential_posterior
+p3 = naive_sequential_posterior(np.array([[0.9, 0.9, 0.9]]))
+check('three agreeing high-confidence steps combine to near-certainty',
+      p3[0] > 0.95, round(float(p3[0]), 4))
+p_half = naive_sequential_posterior(np.array([[0.5, 0.5, 0.5]]))
+check('all-uninformative (p=0.5) steps leave the posterior at 0.5',
+      np.isclose(p_half[0], 0.5), float(p_half[0]))
+p_nan = naive_sequential_posterior(np.array([[0.9, np.nan, np.nan]]))
+check('NaN (unobserved) steps are skipped, not treated as evidence',
+      np.isclose(p_nan[0], 0.9), float(p_nan[0]))
+p_batch = naive_sequential_posterior(np.array([[0.9, 0.9], [0.1, 0.1]]))
+check('batched 2D input returns one posterior per event',
+      p_batch.shape == (2,) and p_batch[0] > 0.5 > p_batch[1], p_batch.tolist())
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
