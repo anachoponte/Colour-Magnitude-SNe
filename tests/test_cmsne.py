@@ -799,6 +799,37 @@ check('evolving_contours returns one surface per grid step', set(surfaces) == {0
 check('each evolving-contour entry has the 4-tuple shape',
       all(len(v) == 4 and v[2].shape == (15, 15) for v in surfaces.values()))
 
+print('\n=== comparison: static vs trajectory vs naive harness ===')
+from cmsne.comparison import compare_classifiers
+from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID
+from cmsne.classifier import ColourClassifier
+
+_rngh = np.random.default_rng(5)
+def _mk_full(n, mu):
+    """Events exposing BOTH the static 2-point schema and the trajectory schema."""
+    out = []
+    for _ in range(n):
+        e = {'gr': float(_rngh.normal(mu, 0.4)), 'peakmag': float(_rngh.normal(22, 1))}
+        for day in TRAJECTORY_GRID:
+            suffix = f'_d{int(day)}'
+            for colour in ('ug', 'gr', 'ri', 'iz', 'zy'):
+                e[f'{colour}{suffix}'] = float(_rngh.normal(mu, 0.4))
+            e[f'peakmag{suffix}'] = float(_rngh.normal(22, 1))
+        out.append(e)
+    return out
+
+sig_h, bg_h = _mk_full(400, 1.2), _mk_full(800, 0.0)
+static_clf = ColourClassifier(keys=['gr'], target_fpr=0.10).fit(sig_h, bg_h)
+traj_clf = TrajectoryClassifier(target_fpr=0.10).fit(sig_h, bg_h)
+result = compare_classifiers(static_clf, traj_clf, sig_h, bg_h, step_colour_key='gr')
+check('harness reports all three headline metrics',
+      set(result) == {'static_recovery', 'trajectory_recovery', 'naive_vs_trajectory_mean_abs_diff'})
+check('both recoveries are plausible for a separable signal',
+      result['static_recovery'] > 0.5 and result['trajectory_recovery'] > 0.5, result)
+check('naive-vs-trajectory divergence is non-negative and finite',
+      np.isfinite(result['naive_vs_trajectory_mean_abs_diff']) and
+      result['naive_vs_trajectory_mean_abs_diff'] >= 0.0, result['naive_vs_trajectory_mean_abs_diff'])
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
