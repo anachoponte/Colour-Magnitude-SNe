@@ -28,7 +28,7 @@
     {
       "id": 4,
       "subject": "Task 4: CMD contour / posterior-surface layer",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1,
         3
@@ -56,5 +56,5 @@
       "description": "**Goal:** A production-scale trajectory generation script mirroring `scripts/run_multicolour.py`, so the trajectory population can actually be generated at scale on BlueBEAR (no OpSim DB is available locally).\n\n**Files:**\n- Create: `scripts/run_trajectory.py`\n- Create: `scripts/run_trajectory_bluebear.sh`\n\n**Acceptance Criteria:**\n- [ ] `scripts/run_trajectory.py` uses the identical `CLASSES` table as `scripts/run_multicolour.py` (same classes, rates, abs-mag distributions), so the two productions cover the same population and are directly comparable.\n- [ ] It uses `cmsne.trajectory.TrajectoryGenerator` in place of `cmsne.multicolour.MultiColourGenerator`, with no other behavioural difference from `run_multicolour.py`'s CLI/manifest/output conventions.\n- [ ] The script imports and parses `--help` successfully without requiring an OpSim database connection (DB access only happens inside `run_class`, not at import or arg-parse time).\n\n**Verify:**\n- `python scripts/run_trajectory.py --help` \u2192 prints usage/help text, exits 0, no OpSim DB required.\n- `bash -n scripts/run_trajectory_bluebear.sh` \u2192 no output, exit 0 (syntax check).\n\nFull code for both files is written out in full in `docs/superpowers/plans/2026-10-22-sequential-cmd-classifier.md`, Task 6 -- copy it verbatim; no placeholders.\n\n```json:metadata\n{\"files\": [\"scripts/run_trajectory.py\", \"scripts/run_trajectory_bluebear.sh\"], \"verifyCommand\": \"python scripts/run_trajectory.py --help && bash -n scripts/run_trajectory_bluebear.sh\", \"acceptanceCriteria\": [\"identical CLASSES table to run_multicolour.py\", \"uses TrajectoryGenerator in place of MultiColourGenerator\", \"--help works without OpSim DB\"], \"modelTier\": \"mechanical\"}\n```"
     }
   ],
-  "lastUpdated": "2026-10-22T12:55:00Z"
+  "lastUpdated": "2026-10-22T15:01:00Z"
 }
