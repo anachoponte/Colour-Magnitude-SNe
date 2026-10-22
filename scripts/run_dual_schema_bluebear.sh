@@ -1,5 +1,11 @@
 #!/bin/bash
-# Dual-schema run on BlueBEAR (BEAR-apps module + cmsne-icelake venv).
+# Dual-schema run on BlueBEAR (bare Python module + cmsne-icelake-modern venv).
+#
+# Uses cmsne-icelake-modern, not cmsne-icelake: that venv's own pip-installed
+# packages (modern scikit-learn/numpy/scipy/sncosmo) are shadowed at runtime
+# if any of the SciPy-bundle/astropy/matplotlib/scikit-learn BEAR modules are
+# loaded, because `module load` prepends their site-packages to PYTHONPATH
+# ahead of the venv's own -- so only the bare Python module is loaded here.
 #
 #   sbatch --array=0-9 scripts/run_dual_schema_bluebear.sh          # one class per task
 #   sbatch scripts/run_dual_schema_bluebear.sh --n 20000            # all classes, serial
@@ -18,11 +24,7 @@ module purge
 module load bluebear
 module load bear-apps/2021b
 module load Python/3.9.6-GCCcore-11.2.0
-module load SciPy-bundle/2021.10-foss-2021b
-module load astropy/5.0.4-foss-2021b
-module load matplotlib/3.4.3-foss-2021b
-module load scikit-learn/1.0.1-foss-2021b
-source /rds/projects/s/smithgp-lensed-transients/andres/virtual-environments/cmsne-icelake/bin/activate
+source /rds/projects/s/smithgp-lensed-transients/andres/virtual-environments/cmsne-icelake-modern/bin/activate
 
 export CMSNE_OPSIM_DB="${CMSNE_OPSIM_DB:-/rds/projects/s/smithgp-lensed-transients/andres/opsim_data/baseline_v5.3.2_10yrs.db}"
 
