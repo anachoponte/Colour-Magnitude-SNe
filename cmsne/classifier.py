@@ -18,6 +18,7 @@ expose ``lensed_colour`` and ``band_1_mag_l``.
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import roc_curve as _sklearn_roc_curve
 
 from .colour_magnitude import weighted_quantile
 
@@ -170,6 +171,32 @@ class ColourClassifier:
         gradual transition — prefer :meth:`probability` / :meth:`rank`.
         """
         return self.score(events) >= self.threshold
+
+    def roc_curve(self, signal_events, background_events,
+                  signal_weights=None, background_weights=None):
+        """ROC curve sweeping the classifier's score threshold.
+
+        Unlike :meth:`predict`, which only reports recovery/FPR at the one
+        ``target_fpr``-pinned threshold set during :meth:`fit`, this sweeps
+        every achievable threshold over ``score()`` -- the full sensitivity
+        vs contamination trade-off, not a single operating point.
+
+        Weights are used as given (no signal/background rebalancing, unlike
+        :meth:`fit`): the real rate-weighted trade-off is what an ROC curve
+        should show, not the balanced-training view.
+
+        :return: ``(fpr, tpr, thresholds)`` from ``sklearn.metrics.roc_curve``,
+            rate-weighted if weights are given. ``thresholds`` are on the same
+            [0, 1] scale as :meth:`score`/:meth:`probability`.
+        """
+        s_sig = self.score(signal_events)
+        s_bg = self.score(background_events)
+        y_true = np.r_[np.ones(len(s_sig)), np.zeros(len(s_bg))]
+        y_score = np.r_[s_sig, s_bg]
+        ws = np.ones(len(s_sig)) if signal_weights is None else np.asarray(signal_weights, float)
+        wb = np.ones(len(s_bg)) if background_weights is None else np.asarray(background_weights, float)
+        sample_weight = np.r_[ws, wb]
+        return _sklearn_roc_curve(y_true, y_score, sample_weight=sample_weight)
 
     def recovery_rate(self, signal_events, weights=None):
         """Fraction of lensed SN Ia flagged (rate-weighted if ``weights`` given).

@@ -75,6 +75,27 @@ TRAJECTORY_COLOUR_KEYS = [f'{a[-1]}{b[-1]}{_step_suffix(day)}'
 TRAJECTORY_MAGNITUDE_KEYS = tuple(f'peakmag{_step_suffix(day)}' for day in TRAJECTORY_GRID)
 
 
+def reveal_up_to(event, k, grid=TRAJECTORY_GRID):
+    """Copy of ``event`` with trajectory keys past grid step ``k`` set to NaN.
+
+    Simulates having observed only the first ``k + 1`` grid steps (``k=0``
+    means trigger only) -- used to score a trajectory event as it would have
+    looked at an earlier point in its sequence, without re-simulating
+    anything.
+
+    :param k: last visible grid-step index (0-based).
+    :return: a new dict; ``event`` itself is not modified.
+    """
+    n_steps = len(grid)
+    cols_per_step = len(TRAJECTORY_COLOUR_KEYS) // n_steps
+    e = dict(event)
+    for step in range(k + 1, n_steps):
+        for key in TRAJECTORY_COLOUR_KEYS[step * cols_per_step:(step + 1) * cols_per_step]:
+            e[key] = np.nan
+        e[TRAJECTORY_MAGNITUDE_KEYS[step]] = np.nan
+    return e
+
+
 class TrajectoryGenerator(MultiColourGenerator):
     """Like :class:`cmsne.multicolour.MultiColourGenerator`, but records the
     full N-point trajectory (:func:`event_trajectory`) instead of a fixed
@@ -156,3 +177,25 @@ class TrajectoryClassifier(ColourClassifier):
                          target_fpr=target_fpr, calibrate=calibrate, **hgb)
         self.magnitude_feature = None
         self.extra = TRAJECTORY_MAGNITUDE_KEYS
+
+    def roc_curve_by_step(self, signal_events, background_events,
+                          signal_weights=None, background_weights=None,
+                          grid=TRAJECTORY_GRID):
+        """:meth:`cmsne.classifier.ColourClassifier.roc_curve` at every
+        Δt-since-trigger grid step.
+
+        Reveals each event's trajectory feature vector only up to grid step
+        ``k`` (:func:`reveal_up_to`) before scoring, so the resulting ROC
+        curves show how the recovery/contamination trade-off changes as more
+        of the trajectory becomes available -- not just the final, fully-
+        revealed snapshot that :meth:`roc_curve` alone would give.
+
+        :return: dict ``{day: (fpr, tpr, thresholds)}`` keyed by each ``day``
+            in ``grid``, in the same order as ``grid``.
+        """
+        out = {}
+        for k, day in enumerate(grid):
+            sig_partial = [reveal_up_to(e, k, grid) for e in signal_events]
+            bg_partial = [reveal_up_to(e, k, grid) for e in background_events]
+            out[day] = self.roc_curve(sig_partial, bg_partial, signal_weights, background_weights)
+        return out
