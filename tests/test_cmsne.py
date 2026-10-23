@@ -33,6 +33,11 @@ def check(name, cond, extra=''):
     (PASS if cond else FAIL).append(name)
     print(('  ok   ' if cond else '  FAIL ') + name + (('  -> ' + str(extra)) if extra else ''))
 
+def _auc(fpr, tpr):
+    """Trapezoidal AUC -- avoids numpy.trapz/trapezoid's rename across versions."""
+    fpr, tpr = np.asarray(fpr, float), np.asarray(tpr, float)
+    return float(np.sum((fpr[1:] - fpr[:-1]) * (tpr[1:] + tpr[:-1]) / 2))
+
 print('\n=== obs_to_mags: epoch matching ===')
 # band1 epochs 0,10,20 ; band2 epochs 10.5, 40 -> only day 10 pairs (|dt|=0.5<=3)
 d1, d2 = [0.0, 10.0, 20.0], [10.5, 40.0]
@@ -659,7 +664,8 @@ check('TrajectoryGenerator._event_features uses the trajectory schema',
       set(_tg._event_features(_lct, 15.0, 5.0)) >= {'gr_d0', 'peakmag_d0', 'gr_d60'})
 
 print('\n=== TrajectoryClassifier: cumulative multi-step scoring ===')
-from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS
+from cmsne.trajectory import (TrajectoryClassifier, TRAJECTORY_COLOUR_KEYS,
+                              TRAJECTORY_MAGNITUDE_KEYS, TRAJECTORY_GRID, reveal_up_to)
 _rngt = np.random.default_rng(11)
 def _mk_traj(n, mu, n_steps_seen):
     """n events; colours at the first n_steps_seen grid steps set, later NaN."""
@@ -693,6 +699,32 @@ p_five = tclf.probability(five_step).mean()
 check('more observed steps -> more confident posterior for true signal',
       p_five > p_one, (round(p_one, 3), round(p_five, 3)))
 
+revealed = reveal_up_to(sig_t[0], 1, TRAJECTORY_GRID)
+check('reveal_up_to keeps steps 0-1 finite',
+      np.isfinite(revealed['gr_d0']) and np.isfinite(revealed['gr_d3']))
+check('reveal_up_to NaNs out steps beyond k',
+      np.isnan(revealed['gr_d14']) and np.isnan(revealed['peakmag_d14']) and
+      np.isnan(revealed['gr_d60']) and np.isnan(revealed['peakmag_d60']))
+check('reveal_up_to does not mutate the original event',
+      np.isfinite(sig_t[0]['gr_d14']))
+
+fpr_r, tpr_r, thr_r = tclf.roc_curve(sig_t, bg_t)
+check('roc_curve returns matching-length fpr/tpr/thresholds arrays',
+      len(fpr_r) == len(tpr_r) == len(thr_r))
+check('roc_curve fpr/tpr bounded in [0,1] and fpr non-decreasing',
+      np.all((fpr_r >= 0) & (fpr_r <= 1)) and np.all((tpr_r >= 0) & (tpr_r <= 1)) and
+      np.all(np.diff(fpr_r) >= 0))
+auc_r = _auc(fpr_r, tpr_r)
+check('roc_curve AUC is high for a separable trajectory signal', auc_r > 0.9, round(auc_r, 3))
+
+by_step = tclf.roc_curve_by_step(sig_t, bg_t, grid=TRAJECTORY_GRID)
+check('roc_curve_by_step returns one entry per grid step', set(by_step) == set(TRAJECTORY_GRID))
+aucs_by_step = [_auc(by_step[d][0], by_step[d][1]) for d in TRAJECTORY_GRID]
+check('AUC with only the trigger step revealed is already well above chance',
+      aucs_by_step[0] > 0.6, round(aucs_by_step[0], 3))
+check('revealing more steps does not collapse the AUC (final >= first step)',
+      aucs_by_step[-1] >= aucs_by_step[0], [round(a, 3) for a in aucs_by_step])
+
 print('\n=== ColourClassifier: multi-colour flexible boundary ===')
 from cmsne.classifier import ColourClassifier, colour_feature_matrix
 _rng = np.random.default_rng(7)
@@ -713,6 +745,19 @@ rec = clf.recovery_rate(sig_ev)
 fpr = float(np.mean(clf.predict(bg_ev)))
 check('separable colours: high recovery', rec > 0.8, round(rec, 3))
 check('threshold pins contamination near target', abs(fpr - 0.10) < 0.06, round(fpr, 3))
+fpr_roc, tpr_roc, thr_roc = clf.roc_curve(sig_ev, bg_ev)
+check('roc_curve returns matching-length fpr/tpr/thresholds arrays',
+      len(fpr_roc) == len(tpr_roc) == len(thr_roc))
+check('roc_curve fpr/tpr bounded in [0,1] and fpr non-decreasing',
+      np.all((fpr_roc >= 0) & (fpr_roc <= 1)) and np.all((tpr_roc >= 0) & (tpr_roc <= 1)) and
+      np.all(np.diff(fpr_roc) >= 0))
+auc = _auc(fpr_roc, tpr_roc)
+check('separable signal gives a high ROC AUC', auc > 0.9, round(auc, 3))
+fpr_w, tpr_w, _ = clf.roc_curve(sig_ev, bg_ev,
+      signal_weights=np.abs(_rng.normal(1, 0.3, len(sig_ev))),
+      background_weights=np.abs(_rng.normal(1, 0.3, len(bg_ev))))
+auc_w = _auc(fpr_w, tpr_w)
+check('rate-weighted roc_curve also gives a high AUC', auc_w > 0.85, round(auc_w, 3))
 check('NaN colours handled (no crash, finite scores)', np.all(np.isfinite(clf.score(sig_ev))))
 check('default magnitude feature is brightest-observed peakmag',
       clf.magnitude_feature == 'peakmag' and clf.extra == ('peakmag',), (clf.magnitude_feature, clf.extra))
