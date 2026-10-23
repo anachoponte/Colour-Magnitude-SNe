@@ -58,6 +58,10 @@ def shared_ranges(signal, background, pair_key, grid=TRAJECTORY_GRID):
         colours.extend(e.get(colour_key, np.nan) for e in pooled)
         mags.extend(e.get(magnitude_key, np.nan) for e in pooled)
     colours, mags = np.asarray(colours, float), np.asarray(mags, float)
+    if not np.any(np.isfinite(colours)) or not np.any(np.isfinite(mags)):
+        raise ValueError(
+            f"'{pair_key}' has no finite colour/magnitude values at any grid step "
+            "-- nothing observed this band pair in the given population")
     return ((float(np.nanmin(colours)), float(np.nanmax(colours))),
             (float(np.nanmin(mags)), float(np.nanmax(mags))))
 
@@ -77,9 +81,16 @@ def plot_boundary_evolution(signal, background, pair_key, out_path, grid=TRAJECT
         ax.contour(cg, mg, pg, levels=[0.5], colors='white', linewidths=1.2)
         ax.set_title(f'+{day:.0f}d')
         ax.set_xlabel(f'{pair_key[0]}-{pair_key[1]}')
-        ax.invert_yaxis()
+    # Axes share y (sharey=True), so inverting once on any one of them inverts
+    # all of them -- calling invert_yaxis() per-axis in the loop above would
+    # toggle the shared ylim back and forth once per axis instead.
+    axes[0].invert_yaxis()
     axes[0].set_ylabel('peakmag (brightest-observed)')
     fig.suptitle(f'P(lensed Ia) vs {pair_key[0]}-{pair_key[1]} colour -- evolution since trigger')
+    fig.subplots_adjust(bottom=0.22)
+    fig.text(0.5, 0.02, 'posterior_surface() has no weight argument -- unlike the ROC figures, '
+                        'this is fit on raw per-event counts, not rate-weighted',
+            ha='center', fontsize=8, color='gray')
     fig.colorbar(mesh, ax=axes, shrink=0.85, label='P(lensed Ia)')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -99,7 +110,11 @@ def main():
     for pair_key in PAIR_KEYS:
         out_path = os.path.join(args.out_dir, f'boundary_{pair_key}.png')
         print(f'fitting {pair_key} ({len(TRAJECTORY_GRID)} grid steps)...')
-        plot_boundary_evolution(signal, background, pair_key, out_path, n=args.n)
+        try:
+            plot_boundary_evolution(signal, background, pair_key, out_path, n=args.n)
+        except ValueError as exc:
+            print(f'skipping {pair_key}: {exc}')
+            continue
         print(f'wrote {out_path}')
 
 
