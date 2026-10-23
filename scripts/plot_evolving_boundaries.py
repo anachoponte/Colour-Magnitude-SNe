@@ -46,17 +46,6 @@ CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn
 PAIR_KEYS = [f'{a[-1]}{b[-1]}' for a, b in ADJ_COLOURS]
 
 
-def load_population(data_dir):
-    """Load every class's pkl, split into signal (lensed_Ia) vs background (rest)."""
-    pop = {}
-    for c in CLASSES:
-        with open(os.path.join(data_dir, f'{c}.pkl'), 'rb') as f:
-            pop[c] = pickle.load(f)['events']
-    signal = pop['lensed_Ia']
-    background = [e for c in CLASSES if c != 'lensed_Ia' for e in pop[c]]
-    return signal, background
-
-
 def shared_ranges(signal, background, signal_weights, background_weights,
                   pair_key, grid=TRAJECTORY_GRID):
     """Pooled, rate-weighted, outlier-robust colour/magnitude range across
