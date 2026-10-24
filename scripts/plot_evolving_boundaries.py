@@ -223,11 +223,21 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                            emphasize_signal_edge=False, zorder=1, binary_colour=False):
     """Draw every class's weight-rated scatter onto ax_main, plus weighted,
     density-normalised marginal histograms onto ax_top (magnitude) and
-    ax_right (colour)."""
+    ax_right (colour).
+
+    In binary_colour mode the histograms are POOLED across every lensed
+    class into one line and every unlensed class into another -- one line
+    per class (the non-binary default) would draw 5 overlapping
+    same-coloured lines per group, indistinguishable from each other and
+    from a single merged line, so pooling is strictly more informative at
+    no visual cost.
+    """
     suffix = _step_suffix(day)
     colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
     mag_bins = np.linspace(*magnitude_range, N_MARGINAL_BINS + 1)
     colour_bins = np.linspace(*colour_range, N_MARGINAL_BINS + 1)
+    pooled = {True: {'mags': [], 'colours': [], 'weights': []},
+             False: {'mags': [], 'colours': [], 'weights': []}}
 
     for i, c in enumerate(CLASSES):
         events = pop[c]
@@ -248,7 +258,11 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                         marker='*' if is_signal else '.', c=rgba,
                         edgecolors=edgecolors, linewidths=0.3,
                         rasterized=True, zorder=zorder)
-        if weights.sum() > 0:
+        if binary_colour:
+            pooled[is_signal]['mags'].append(mags)
+            pooled[is_signal]['colours'].append(colours)
+            pooled[is_signal]['weights'].append(weights)
+        elif weights.sum() > 0:
             # density=True divides by the weight sum; an all-zero-weight
             # slice (the same degenerate case _weight_alpha guards above)
             # would otherwise silently draw a NaN-filled (invisible) step.
@@ -257,6 +271,22 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                        histtype='step', color=point_color, linewidth=lw)
             ax_right.hist(colours, bins=colour_bins, weights=weights, density=True,
                          histtype='step', orientation='horizontal', color=point_color, linewidth=lw)
+
+    if binary_colour:
+        for is_signal in (True, False):
+            group = pooled[is_signal]
+            if not group['mags']:
+                continue
+            group_weights = np.concatenate(group['weights'])
+            if group_weights.sum() <= 0:
+                continue
+            group_mags = np.concatenate(group['mags'])
+            group_colours = np.concatenate(group['colours'])
+            lw = 1.6 if is_signal else 0.9
+            ax_top.hist(group_mags, bins=mag_bins, weights=group_weights, density=True,
+                       histtype='step', color=BINARY_COLORS[is_signal], linewidth=lw)
+            ax_right.hist(group_colours, bins=colour_bins, weights=group_weights, density=True,
+                         histtype='step', orientation='horizontal', color=BINARY_COLORS[is_signal], linewidth=lw)
 
     ax_main.set_xlim(*magnitude_range)
     ax_main.set_ylim(*colour_range)
@@ -323,11 +353,23 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
     below the background classes', so pooling globally would make it vanish
     from the plot entirely instead of showing where its (rare but real)
     weighted mass sits.
+
+    In binary_colour mode the marginal histograms ARE pooled, one line per
+    group (see _draw_weighted_sources) -- but each class still contributes
+    a fixed n_resample points regardless of its true relative rate (only
+    the within-class resample probabilities use the real weights), so this
+    pooled line is an equal-representation mixture across the classes in
+    its group, NOT rate-weighted between them the way
+    _draw_weighted_sources' pooled histogram is. The two binary figures
+    answer different questions: this one shows the shape each class
+    contributes in equal measure, that one shows the true rate-weighted
+    mix.
     """
     suffix = _step_suffix(day)
     colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
     mag_bins = np.linspace(*magnitude_range, N_MARGINAL_BINS + 1)
     colour_bins = np.linspace(*colour_range, N_MARGINAL_BINS + 1)
+    pooled = {True: {'mags': [], 'colours': []}, False: {'mags': [], 'colours': []}}
 
     for i, c in enumerate(CLASSES):
         events = pop[c]
@@ -349,11 +391,27 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                        marker='*' if is_signal else '.', color=point_color,
                        alpha=0.35 if is_signal else 0.15,
                        rasterized=True, zorder=1)
-        lw = 1.6 if is_signal else 0.9
-        ax_top.hist(rmags, bins=mag_bins, density=True, histtype='step',
-                   color=point_color, linewidth=lw)
-        ax_right.hist(rcolours, bins=colour_bins, density=True, histtype='step',
-                     orientation='horizontal', color=point_color, linewidth=lw)
+        if binary_colour:
+            pooled[is_signal]['mags'].append(rmags)
+            pooled[is_signal]['colours'].append(rcolours)
+        else:
+            lw = 1.6 if is_signal else 0.9
+            ax_top.hist(rmags, bins=mag_bins, density=True, histtype='step',
+                       color=point_color, linewidth=lw)
+            ax_right.hist(rcolours, bins=colour_bins, density=True, histtype='step',
+                         orientation='horizontal', color=point_color, linewidth=lw)
+
+    if binary_colour:
+        for is_signal in (True, False):
+            group = pooled[is_signal]
+            if not group['mags']:
+                continue
+            lw = 1.6 if is_signal else 0.9
+            ax_top.hist(np.concatenate(group['mags']), bins=mag_bins, density=True,
+                       histtype='step', color=BINARY_COLORS[is_signal], linewidth=lw)
+            ax_right.hist(np.concatenate(group['colours']), bins=colour_bins, density=True,
+                         histtype='step', orientation='horizontal',
+                         color=BINARY_COLORS[is_signal], linewidth=lw)
 
     ax_main.set_xlim(*magnitude_range)
     ax_main.set_ylim(*colour_range)
