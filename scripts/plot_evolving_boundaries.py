@@ -54,7 +54,20 @@ to whatever maximum a given grid step/band pair happened to reach (e.g.
 Axes follow the lensing-literature convention: magnitude on x, colour on y
 (not the stellar-CMD convention of colour on x, magnitude on y).
 
+`--target` chooses which classes count as signal: the default `lensed_ia`
+treats only `lensed_Ia` as signal (everything else, including the other
+lensed templates, is background) -- this preserves every filename and
+figure produced before this flag existed. `all_lensed` instead pools all
+five `lensed_*` classes as signal and all five `unlensed_*` classes as
+background (lensed core-collapse templates carry real lensing weights --
+see `cmsne.multicolour.rate_weight`'s `'lCC'` branch -- on the same
+physical convention as `lensed_Ia`'s `'sig'` weight, so pooling them is
+physically meaningful, not just a relabelling). `all_lensed` output
+filenames get an `_alllensed` suffix so both targets' figures can coexist
+in the same --out-dir.
+
     python scripts/plot_evolving_boundaries.py --data-dir results/dual_58563115 --out-dir docs/figures
+    python scripts/plot_evolving_boundaries.py --data-dir results/dual_58563115 --out-dir docs/figures --target all_lensed
 """
 import argparse, os, pickle, sys
 
@@ -123,7 +136,7 @@ def compute_surfaces(signal, background, signal_weights, background_weights,
     return surfaces
 
 
-def plot_boundary_evolution(surfaces, pair_key, out_path, grid=TRAJECTORY_GRID):
+def plot_boundary_evolution(surfaces, pair_key, out_path, signal_label, grid=TRAJECTORY_GRID):
     fig, axes = plt.subplots(1, len(grid), figsize=(4 * len(grid), 4.2), sharex=True, sharey=True)
     mesh = None
     for ax, day in zip(axes, grid):
@@ -137,11 +150,11 @@ def plot_boundary_evolution(surfaces, pair_key, out_path, grid=TRAJECTORY_GRID):
         ax.set_title(f'+{day:.0f}d')
         ax.set_xlabel('peakmag (brightest-observed)')
     axes[0].set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
-    fig.suptitle(f'P(lensed Ia) vs {pair_key[0]}-{pair_key[1]} colour -- evolution since trigger')
+    fig.suptitle(f'P({signal_label}) vs {pair_key[0]}-{pair_key[1]} colour -- evolution since trigger')
     fig.subplots_adjust(bottom=0.22)
     fig.text(0.5, 0.02, 'rate-weighted; axis range is the 1st-99th weighted percentile, not full min/max',
             ha='center', fontsize=8, color='gray')
-    fig.colorbar(mesh, ax=axes, shrink=0.85, label='P(lensed Ia)')
+    fig.colorbar(mesh, ax=axes, shrink=0.85, label=f'P({signal_label})')
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -187,7 +200,7 @@ def _corner_panel(fig, outer_spec):
 
 
 def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
-                           colour_range, magnitude_range, colors,
+                           colour_range, magnitude_range, colors, signal_classes,
                            emphasize_signal_edge=False, zorder=1):
     """Draw every class's weight-rated scatter onto ax_main, plus weighted,
     density-normalised marginal histograms onto ax_top (magnitude) and
@@ -206,7 +219,7 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
         colours, mags, weights = colours[finite], mags[finite], weights[finite]
         if colours.size == 0:
             continue
-        is_signal = c == 'lensed_Ia'
+        is_signal = c in signal_classes
         alphas = _weight_alpha(weights, alpha_range=(0.08, 0.9) if is_signal else (0.02, 0.6))
         rgba = np.tile(colors[i], (len(alphas), 1))
         rgba[:, 3] = alphas
@@ -231,16 +244,16 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
     ax_top.set_title(f'+{day:.0f}d')
 
 
-def _class_legend_handles(colors):
+def _class_legend_handles(colors, signal_classes):
     return [Line2D([0], [0], color=colors[i],
-                   lw=1.6 if c == 'lensed_Ia' else 0.9,
-                   marker='*' if c == 'lensed_Ia' else None,
-                   markersize=8 if c == 'lensed_Ia' else 0)
+                   lw=1.6 if c in signal_classes else 0.9,
+                   marker='*' if c in signal_classes else None,
+                   markersize=8 if c in signal_classes else 0)
            for i, c in enumerate(CLASSES)]
 
 
 def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitude_range,
-                                 grid=TRAJECTORY_GRID):
+                                 signal_classes, signal_label, grid=TRAJECTORY_GRID):
     """Weight-rated corner-style companion to the boundary figure: for each
     grid step, a main colour-magnitude scatter (per-point alpha from each
     event's own rate weight, see _weight_alpha) plus weighted, density-
@@ -254,15 +267,16 @@ def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitud
     for col, day in enumerate(grid):
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
-                               colour_range, magnitude_range, colors)
+                               colour_range, magnitude_range, colors, signal_classes)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
             ax_main.tick_params(labelleft=False)
 
-    fig.legend(_class_legend_handles(colors), CLASSES, fontsize=7,
+    fig.legend(_class_legend_handles(colors, signal_classes), CLASSES, fontsize=7,
               loc='upper left', bbox_to_anchor=(0.90, 0.88))
-    fig.suptitle(f'Weight-rated discrete sources behind the {pair_key} boundary figure\n'
+    fig.suptitle(f'Weight-rated discrete sources behind the {pair_key} boundary figure '
+                f'(signal: {signal_label})\n'
                 f'(point alpha ~ log rate weight; top/right: weighted class histograms)',
                 fontsize=10)
     fig.subplots_adjust(left=0.04, right=0.89, top=0.84, bottom=0.08)
@@ -271,7 +285,7 @@ def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitud
 
 
 def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
-                            colour_range, magnitude_range, colors, rng,
+                            colour_range, magnitude_range, colors, rng, signal_classes,
                             n_resample=N_RESAMPLE):
     """Draw each class as a weighted bootstrap resample rather than every raw
     event at weight-scaled alpha: `n_resample` points are drawn with
@@ -279,10 +293,10 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
     rate weight, so point *density* (not opacity) encodes the class's
     weighted distribution. Resampling is done per class independently (not
     pooled across classes), matching _draw_weighted_sources' per-class alpha
-    scale -- lensed_Ia's total rate is many orders of magnitude below the
-    background classes', so pooling globally would make it vanish from the
-    plot entirely instead of showing where its (rare but real) weighted mass
-    sits.
+    scale -- a signal class's total rate can be many orders of magnitude
+    below the background classes', so pooling globally would make it vanish
+    from the plot entirely instead of showing where its (rare but real)
+    weighted mass sits.
     """
     suffix = _step_suffix(day)
     colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
@@ -303,7 +317,7 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
             continue
         idx = rng.choice(colours.size, size=n_resample, replace=True, p=weights / wsum)
         rcolours, rmags = colours[idx], mags[idx]
-        is_signal = c == 'lensed_Ia'
+        is_signal = c in signal_classes
         ax_main.scatter(rmags, rcolours, s=16 if is_signal else 3,
                        marker='*' if is_signal else '.', color=colors[i],
                        alpha=0.35 if is_signal else 0.15,
@@ -321,7 +335,8 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
 
 
 def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitude_range,
-                                  grid=TRAJECTORY_GRID, n_resample=N_RESAMPLE, seed=RESAMPLE_SEED):
+                                  signal_classes, signal_label, grid=TRAJECTORY_GRID,
+                                  n_resample=N_RESAMPLE, seed=RESAMPLE_SEED):
     """Corner-style companion like plot_weighted_sources_corner, but drawing a
     weighted resample of each class (see _draw_resampled_sources) instead of
     every raw event at weight-scaled alpha -- point density directly
@@ -337,17 +352,17 @@ def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitu
     for col, day in enumerate(grid):
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
         _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
-                                colour_range, magnitude_range, colors, rng,
+                                colour_range, magnitude_range, colors, rng, signal_classes,
                                 n_resample=n_resample)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
             ax_main.tick_params(labelleft=False)
 
-    fig.legend(_class_legend_handles(colors), CLASSES, fontsize=7,
+    fig.legend(_class_legend_handles(colors, signal_classes), CLASSES, fontsize=7,
               loc='upper left', bbox_to_anchor=(0.90, 0.88))
     fig.suptitle(f'Weighted resample ({n_resample}/class/step) of discrete sources behind '
-                f'the {pair_key} boundary figure\n'
+                f'the {pair_key} boundary figure (signal: {signal_label})\n'
                 f'(point density ~ rate weight, not alpha; top/right: resampled class histograms)',
                 fontsize=10)
     fig.subplots_adjust(left=0.04, right=0.89, top=0.84, bottom=0.08)
@@ -356,9 +371,9 @@ def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitu
 
 
 def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, magnitude_range,
-                             grid=TRAJECTORY_GRID):
+                             signal_classes, signal_label, grid=TRAJECTORY_GRID):
     """Same corner layout as plot_weighted_sources_corner, with the already-
-    fitted P(lensed Ia) posterior surface (from compute_surfaces -- not
+    fitted P(signal) posterior surface (from compute_surfaces -- not
     re-fitted here) underlaid in each main panel beneath the weighted
     scatter, so the decision surface and the weighted sources it was fitted
     from read together in one panel.
@@ -374,7 +389,7 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
         mesh = ax_main.contourf(mg.T, cg.T, pg.T, levels=HEATMAP_LEVELS, cmap='viridis', vmin=0, vmax=1, zorder=0)
         ax_main.contour(mg.T, cg.T, pg.T, levels=[0.5], colors='white', linewidths=1.0, zorder=1)
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
-                               colour_range, magnitude_range, colors,
+                               colour_range, magnitude_range, colors, signal_classes,
                                emphasize_signal_edge=True, zorder=2)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
@@ -382,10 +397,10 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
             ax_main.tick_params(labelleft=False)
 
     cax = fig.add_axes((0.91, 0.55, 0.012, 0.28))
-    fig.colorbar(mesh, cax=cax, label='P(lensed Ia)')
-    fig.legend(_class_legend_handles(colors), CLASSES, fontsize=7,
+    fig.colorbar(mesh, cax=cax, label=f'P({signal_label})')
+    fig.legend(_class_legend_handles(colors, signal_classes), CLASSES, fontsize=7,
               loc='upper left', bbox_to_anchor=(0.91, 0.42))
-    fig.suptitle(f'P(lensed Ia) heatmap + weight-rated discrete sources -- '
+    fig.suptitle(f'P({signal_label}) heatmap + weight-rated discrete sources -- '
                 f'{pair_key[0]}-{pair_key[1]} colour, evolution since trigger', fontsize=10)
     fig.subplots_adjust(left=0.04, right=0.89, top=0.84, bottom=0.08)
     fig.savefig(out_path, dpi=140)
@@ -397,25 +412,36 @@ def main():
     ap.add_argument('--data-dir', required=True, help='directory of per-class <name>.pkl files')
     ap.add_argument('--out-dir', default='docs/figures')
     ap.add_argument('--n', type=int, default=200, help='mesh resolution per axis')
+    ap.add_argument('--target', choices=['lensed_ia', 'all_lensed'], default='lensed_ia',
+                    help="signal definition: 'lensed_ia' (default, lensed_Ia only -- "
+                         "unchanged filenames) or 'all_lensed' (every lensed_* class; "
+                         "output filenames get an _alllensed suffix)")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
+
+    if args.target == 'all_lensed':
+        signal_classes = [c for c in CLASSES if c.startswith('lensed_')]
+        signal_label, file_suffix = 'lensed', '_alllensed'
+    else:
+        signal_classes = ['lensed_Ia']
+        signal_label, file_suffix = 'lensed Ia', ''
 
     pop = {}
     for c in CLASSES:
         with open(os.path.join(args.data_dir, f'{c}.pkl'), 'rb') as f:
             pop[c] = pickle.load(f)['events']
-    signal = pop['lensed_Ia']
-    background = [e for c in CLASSES if c != 'lensed_Ia' for e in pop[c]]
+    signal = [e for c in signal_classes for e in pop[c]]
+    background = [e for c in CLASSES if c not in signal_classes for e in pop[c]]
     signal_weights = np.array([e['weight'] for e in signal])
     background_weights = np.array([e['weight'] for e in background])
-    print(f'signal (lensed_Ia): {len(signal)}, background: {len(background)}')
+    print(f'signal ({"+".join(signal_classes)}): {len(signal)}, background: {len(background)}')
 
     for pair_key in PAIR_KEYS:
-        boundary_path = os.path.join(args.out_dir, f'boundary_{pair_key}.png')
-        sources_path = os.path.join(args.out_dir, f'boundary_{pair_key}_sources.png')
-        corner_path = os.path.join(args.out_dir, f'boundary_{pair_key}_corner.png')
-        resampled_path = os.path.join(args.out_dir, f'boundary_{pair_key}_resampled.png')
+        boundary_path = os.path.join(args.out_dir, f'boundary_{pair_key}{file_suffix}.png')
+        sources_path = os.path.join(args.out_dir, f'boundary_{pair_key}_sources{file_suffix}.png')
+        corner_path = os.path.join(args.out_dir, f'boundary_{pair_key}_corner{file_suffix}.png')
+        resampled_path = os.path.join(args.out_dir, f'boundary_{pair_key}_resampled{file_suffix}.png')
         print(f'fitting {pair_key} ({len(TRAJECTORY_GRID)} grid steps)...')
         try:
             colour_range, magnitude_range = shared_ranges(
@@ -427,16 +453,19 @@ def main():
         surfaces = compute_surfaces(signal, background, signal_weights, background_weights,
                                     pair_key, colour_range, magnitude_range, n=args.n)
 
-        plot_boundary_evolution(surfaces, pair_key, boundary_path)
+        plot_boundary_evolution(surfaces, pair_key, boundary_path, signal_label)
         print(f'wrote {boundary_path}')
 
-        plot_weighted_sources_corner(pop, pair_key, sources_path, colour_range, magnitude_range)
+        plot_weighted_sources_corner(pop, pair_key, sources_path, colour_range, magnitude_range,
+                                     signal_classes, signal_label)
         print(f'wrote {sources_path}')
 
-        plot_corner_with_heatmap(pop, surfaces, pair_key, corner_path, colour_range, magnitude_range)
+        plot_corner_with_heatmap(pop, surfaces, pair_key, corner_path, colour_range, magnitude_range,
+                                 signal_classes, signal_label)
         print(f'wrote {corner_path}')
 
-        plot_resampled_sources_corner(pop, pair_key, resampled_path, colour_range, magnitude_range)
+        plot_resampled_sources_corner(pop, pair_key, resampled_path, colour_range, magnitude_range,
+                                      signal_classes, signal_label)
         print(f'wrote {resampled_path}')
 
 
