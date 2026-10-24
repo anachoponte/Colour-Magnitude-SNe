@@ -14,7 +14,15 @@ for issue #16's investigation), and produces:
 - ``roc_by_step.gif``   -- the same, animated: each frame adds the next
                            grid step's curve.
 
+``--target`` chooses which classes count as signal: the default
+``lensed_ia`` treats only ``lensed_Ia`` as signal (unchanged filenames).
+``all_lensed`` pools all five ``lensed_*`` classes as signal and all five
+``unlensed_*`` classes as background (see the same rationale in
+``plot_evolving_boundaries.py``'s module docstring), writing to filenames
+with an ``_alllensed`` suffix so both targets' outputs can coexist.
+
     python scripts/plot_roc.py --data-dir results/dual_58563115 --out-dir docs/figures
+    python scripts/plot_roc.py --data-dir results/dual_58563115 --out-dir docs/figures --target all_lensed
 """
 import argparse, io, os, pickle, sys
 
@@ -35,14 +43,14 @@ CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn
            'lensed_sn2p', 'unlensed_sn1bc', 'unlensed_sn2l', 'unlensed_sn2n', 'unlensed_sn2p']
 
 
-def load_population(data_dir):
-    """Load every class's pkl, split into signal (lensed_Ia) vs background (rest)."""
+def load_population(data_dir, signal_classes):
+    """Load every class's pkl, split into signal (signal_classes) vs background (rest)."""
     pop = {}
     for c in CLASSES:
         with open(os.path.join(data_dir, f'{c}.pkl'), 'rb') as f:
             pop[c] = pickle.load(f)['events']
-    signal = pop['lensed_Ia']
-    background = [e for c in CLASSES if c != 'lensed_Ia' for e in pop[c]]
+    signal = [e for c in signal_classes for e in pop[c]]
+    background = [e for c in CLASSES if c not in signal_classes for e in pop[c]]
     return signal, background
 
 
@@ -57,14 +65,14 @@ def auc(fpr, tpr):
     return float(np.sum((fpr[1:] - fpr[:-1]) * (tpr[1:] + tpr[:-1]) / 2))
 
 
-def plot_overall_roc(static_roc, traj_roc, out_path):
+def plot_overall_roc(static_roc, traj_roc, out_path, signal_label):
     fig, ax = plt.subplots(figsize=(6, 6))
     for (fpr, tpr, _), label in [(static_roc, 'static'), (traj_roc, 'trajectory')]:
         ax.plot(fpr, tpr, label=f'{label} (AUC={auc(fpr, tpr):.3f})', lw=2)
     ax.plot([0, 1], [0, 1], 'k--', lw=1, alpha=0.5, label='chance')
     ax.set_xlabel('False positive rate')
     ax.set_ylabel('True positive rate (recovery)')
-    ax.set_title('Static vs trajectory classifier ROC (held-out, rate-weighted)')
+    ax.set_title(f'Static vs trajectory classifier ROC (held-out, rate-weighted) -- signal: {signal_label}')
     ax.legend(loc='lower right')
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     fig.tight_layout()
@@ -76,7 +84,7 @@ def _step_colour(i, n_steps):
     return cm.viridis(i / max(n_steps - 1, 1))
 
 
-def plot_roc_by_step(by_step, out_path):
+def plot_roc_by_step(by_step, out_path, signal_label):
     fig, ax = plt.subplots(figsize=(6, 6))
     for i, day in enumerate(TRAJECTORY_GRID):
         fpr, tpr, _ = by_step[day]
@@ -85,7 +93,7 @@ def plot_roc_by_step(by_step, out_path):
     ax.plot([0, 1], [0, 1], 'k--', lw=1, alpha=0.5, label='chance')
     ax.set_xlabel('False positive rate')
     ax.set_ylabel('True positive rate (recovery)')
-    ax.set_title('Trajectory classifier ROC vs time-since-trigger (held-out)')
+    ax.set_title(f'Trajectory classifier ROC vs time-since-trigger (held-out) -- signal: {signal_label}')
     ax.legend(loc='lower right', title='Δt revealed')
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     fig.tight_layout()
@@ -93,7 +101,7 @@ def plot_roc_by_step(by_step, out_path):
     plt.close(fig)
 
 
-def make_roc_gif(by_step, out_path, duration_ms=900):
+def make_roc_gif(by_step, out_path, signal_label, duration_ms=900):
     """One frame per grid step, each adding that step's curve to the ones before."""
     frames = []
     n_steps = len(TRAJECTORY_GRID)
@@ -108,7 +116,7 @@ def make_roc_gif(by_step, out_path, duration_ms=900):
         ax.plot([0, 1], [0, 1], 'k--', lw=1, alpha=0.5)
         ax.set_xlabel('False positive rate')
         ax.set_ylabel('True positive rate (recovery)')
-        ax.set_title(f'Trajectory classifier ROC -- Δt since trigger: +{day:.0f}d')
+        ax.set_title(f'Trajectory classifier ROC -- Δt since trigger: +{day:.0f}d (signal: {signal_label})')
         ax.legend(loc='lower right', title='Δt revealed')
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
         fig.tight_layout()
@@ -129,11 +137,23 @@ def main():
     ap.add_argument('--out-dir', default='docs/figures')
     ap.add_argument('--target-fpr', type=float, default=0.10)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--target', choices=['lensed_ia', 'all_lensed'], default='lensed_ia',
+                    help="signal definition: 'lensed_ia' (default, lensed_Ia only -- "
+                         "unchanged filenames) or 'all_lensed' (every lensed_* class; "
+                         "output filenames get an _alllensed suffix)")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    signal_all, background_all = load_population(args.data_dir)
+    if args.target == 'all_lensed':
+        signal_classes = [c for c in CLASSES if c.startswith('lensed_')]
+        signal_label, file_suffix = 'lensed', '_alllensed'
+    else:
+        signal_classes = ['lensed_Ia']
+        signal_label, file_suffix = 'lensed Ia', ''
+
+    print(f'signal classes: {"+".join(signal_classes)}')
+    signal_all, background_all = load_population(args.data_dir, signal_classes)
     rng = np.random.default_rng(args.seed)
     sig_train, sig_test = split(signal_all, rng)
     bg_train, bg_test = split(background_all, rng)
@@ -156,13 +176,13 @@ def main():
     traj_roc = traj_clf.roc_curve(sig_test, bg_test, sig_test_w, bg_test_w)
     by_step = traj_clf.roc_curve_by_step(sig_test, bg_test, sig_test_w, bg_test_w)
 
-    overall_path = os.path.join(args.out_dir, 'roc_overall.png')
-    by_step_path = os.path.join(args.out_dir, 'roc_by_step.png')
-    gif_path = os.path.join(args.out_dir, 'roc_by_step.gif')
+    overall_path = os.path.join(args.out_dir, f'roc_overall{file_suffix}.png')
+    by_step_path = os.path.join(args.out_dir, f'roc_by_step{file_suffix}.png')
+    gif_path = os.path.join(args.out_dir, f'roc_by_step{file_suffix}.gif')
 
-    plot_overall_roc(static_roc, traj_roc, overall_path)
-    plot_roc_by_step(by_step, by_step_path)
-    make_roc_gif(by_step, gif_path)
+    plot_overall_roc(static_roc, traj_roc, overall_path, signal_label)
+    plot_roc_by_step(by_step, by_step_path, signal_label)
+    make_roc_gif(by_step, gif_path, signal_label)
 
     print(f'wrote {overall_path}')
     print(f'wrote {by_step_path}')
