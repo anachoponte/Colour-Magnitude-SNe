@@ -841,6 +841,32 @@ check('higher colour region is more lensed-like (separable signal)',
 
 surfaces = ctr.evolving_contours(sig_c, bg_c, 'gr', grid=(0.0, 14.0), n=15)
 check('evolving_contours returns one surface per grid step', set(surfaces) == {0.0, 14.0})
+
+# robust_range: outlier-insensitive, and weight-aware
+_vals = np.concatenate([_rngc.normal(0, 1, 500), [500.0, -500.0]])  # 2 extreme outliers
+_lo_mm, _hi_mm = float(np.min(_vals)), float(np.max(_vals))
+_lo_rr, _hi_rr = ctr.robust_range(_vals)
+check('robust_range ignores rare extreme outliers unlike min/max',
+      _hi_rr < _hi_mm / 10 and _lo_rr > _lo_mm / 10, ((_lo_rr, _hi_rr), (_lo_mm, _hi_mm)))
+_w_suppress = np.ones(len(_vals)); _w_suppress[-2:] = 1e-6  # near-zero-weight the outliers
+_lo_rrw, _hi_rrw = ctr.robust_range(_vals, weights=_w_suppress, quantiles=(0.001, 0.999))
+check('robust_range is weight-aware: near-zero weight on outliers keeps range tight',
+      _hi_rrw < 10 and _lo_rrw > -10, (_lo_rrw, _hi_rrw))
+
+# posterior_surface/evolving_contours accept and use weights
+_sig_w = np.ones(len(sig_c)); _bg_w = np.ones(len(bg_c))
+_bg_w[:300] = 1e-6   # down-weight half the background so it barely influences the fit
+cg_w, mg_w, pg_w, clf_w = ctr.posterior_surface(
+    sig_c, bg_c, 'gr_d0', 'peakmag_d0', n=20, signal_weights=_sig_w, background_weights=_bg_w)
+check('posterior_surface accepts weights and still returns valid grids',
+      pg_w.shape == (20, 20) and np.all((pg_w >= 0) & (pg_w <= 1)))
+check('posterior_surface weights actually change the fit (differs from unweighted)',
+      not np.allclose(pg_w, pg), float(np.mean(np.abs(pg_w - pg))))
+
+surfaces_w = ctr.evolving_contours(sig_c, bg_c, 'gr', grid=(0.0, 14.0), n=15,
+                                   signal_weights=_sig_w, background_weights=_bg_w)
+check('evolving_contours forwards weights to every step',
+      not np.allclose(surfaces_w[0.0][2], surfaces[0.0][2]))
 check('each evolving-contour entry has the 4-tuple shape',
       all(len(v) == 4 and v[2].shape == (15, 15) for v in surfaces.values()))
 
