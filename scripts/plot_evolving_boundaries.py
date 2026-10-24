@@ -140,8 +140,17 @@ def _weight_alpha(weights, alpha_range=(0.05, 0.9)):
     everything but the single heaviest point invisible.
     """
     w = np.asarray(weights, dtype=float)
-    wmax = np.nanmax(w) if w.size and np.isfinite(w).any() else 0.0
-    floor = wmax * 1e-20 if wmax > 0 else 1e-300
+    if w.size == 0:
+        return w
+    wmax = np.nanmax(w) if np.isfinite(w).any() else 0.0
+    if wmax <= 0:
+        # Every weight in this slice is zero (or otherwise non-positive) --
+        # none of these events are realised. Render them at the LOWEST
+        # alpha, not the default degenerate-case high alpha below: these are
+        # exactly the implausible-outlier events this function exists to
+        # suppress, not a legitimately uniform-weight population.
+        return np.full(w.shape, alpha_range[0])
+    floor = wmax * 1e-20
     log_w = np.log10(np.clip(w, floor, None))
     lo, hi = np.percentile(log_w, [1, 99])
     if hi <= lo:
@@ -191,12 +200,16 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
         ax_main.scatter(mags, colours, s=16 if is_signal else 3,
                         marker='*' if is_signal else '.', c=rgba,
                         edgecolors=edgecolors, linewidths=0.3,
-                        label=c, rasterized=True, zorder=zorder)
-        lw = 1.6 if is_signal else 0.9
-        ax_top.hist(mags, bins=mag_bins, weights=weights, density=True,
-                   histtype='step', color=colors[i], linewidth=lw)
-        ax_right.hist(colours, bins=colour_bins, weights=weights, density=True,
-                     histtype='step', orientation='horizontal', color=colors[i], linewidth=lw)
+                        rasterized=True, zorder=zorder)
+        if weights.sum() > 0:
+            # density=True divides by the weight sum; an all-zero-weight
+            # slice (the same degenerate case _weight_alpha guards above)
+            # would otherwise silently draw a NaN-filled (invisible) step.
+            lw = 1.6 if is_signal else 0.9
+            ax_top.hist(mags, bins=mag_bins, weights=weights, density=True,
+                       histtype='step', color=colors[i], linewidth=lw)
+            ax_right.hist(colours, bins=colour_bins, weights=weights, density=True,
+                         histtype='step', orientation='horizontal', color=colors[i], linewidth=lw)
 
     ax_main.set_xlim(*magnitude_range)
     ax_main.set_ylim(*colour_range)
@@ -206,7 +219,7 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
 
 def _class_legend_handles(colors):
     return [Line2D([0], [0], color=colors[i],
-                   lw=1.6 if c == 'lensed_Ia' else 1.0,
+                   lw=1.6 if c == 'lensed_Ia' else 0.9,
                    marker='*' if c == 'lensed_Ia' else None,
                    markersize=8 if c == 'lensed_Ia' else 0)
            for i, c in enumerate(CLASSES)]
@@ -255,7 +268,6 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
     outer = fig.add_gridspec(1, len(grid), wspace=0.35)
     colors = plt.cm.tab10(np.linspace(0, 1, len(CLASSES)))
     mesh = None
-    main_axes = []
 
     for col, day in enumerate(grid):
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
@@ -265,7 +277,6 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                                colour_range, magnitude_range, colors,
                                emphasize_signal_edge=True, zorder=2)
-        main_axes.append(ax_main)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
