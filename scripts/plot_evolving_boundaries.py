@@ -353,6 +353,17 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
     below the background classes', so pooling globally would make it vanish
     from the plot entirely instead of showing where its (rare but real)
     weighted mass sits.
+
+    In binary_colour mode the marginal histograms ARE pooled, one line per
+    group (see _draw_weighted_sources) -- but each class still contributes
+    a fixed n_resample points regardless of its true relative rate (only
+    the within-class resample probabilities use the real weights), so this
+    pooled line is an equal-representation mixture across the classes in
+    its group, NOT rate-weighted between them the way
+    _draw_weighted_sources' pooled histogram is. The two binary figures
+    answer different questions: this one shows the shape each class
+    contributes in equal measure, that one shows the true rate-weighted
+    mix.
     """
     suffix = _step_suffix(day)
     colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
