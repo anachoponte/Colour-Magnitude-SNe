@@ -21,6 +21,27 @@ for issue #16's investigation), and produces:
 ``plot_evolving_boundaries.py``'s module docstring), writing to filenames
 with an ``_alllensed`` suffix so both targets' outputs can coexist.
 
+Under ``--target all_lensed`` only, three more evaluations run against the
+SAME already-fit TrajectoryClassifier (pooled signal, boundary fit once --
+nothing below refits it):
+
+- ``roc_by_subtype_alllensed.png`` -- one ROC curve per lensed subtype
+  (``lensed_Ia``, ``lensed_sn1bc``, ...), each subtype's own held-out test
+  events scored as "signal" against the SAME unlensed background test set.
+  Other lensed subtypes never enter a given subtype's curve, so they are
+  never counted as false positives for it.
+- ``roc_by_step_<subtype>_alllensed.png``/``.gif`` -- the same per-subtype
+  idea, but swept over Δt-since-trigger grid steps like ``roc_by_step``/
+  ``roc_by_step.gif``, one file pair per lensed subtype.
+- ``rate_by_subtype_alllensed.png``/``.gif`` -- weighted recovered rate
+  (lensed subtypes) and false-positive rate (unlensed classes) at the
+  classifier's already-pinned ``target_fpr`` threshold, per class per grid
+  step. This codebase's per-event ``weight`` is a relative/shape quantity,
+  not calibrated to an absolute survey rate (see
+  ``cmsne/sn_rates.py``/``cmsne/colour_magnitude.py``'s weight functions),
+  so these are relative weighted-rate units -- Σ weight of flagged events --
+  not literal events/year.
+
     python scripts/plot_roc.py --data-dir results/dual_58563115 --out-dir docs/figures
     python scripts/plot_roc.py --data-dir results/dual_58563115 --out-dir docs/figures --target all_lensed
 """
@@ -37,10 +58,14 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from cmsne.classifier import ColourClassifier
-from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID
+from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
 
 CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn2n',
            'lensed_sn2p', 'unlensed_sn1bc', 'unlensed_sn2l', 'unlensed_sn2n', 'unlensed_sn2p']
+
+# Same tab10 indexing as plot_evolving_boundaries.py's identically-ordered
+# CLASSES list, so a given class's colour matches across every figure.
+CLASS_COLORS = dict(zip(CLASSES, plt.cm.tab10(np.linspace(0, 1, len(CLASSES)))))
 
 
 def load_population(data_dir, signal_classes):
@@ -131,6 +156,121 @@ def make_roc_gif(by_step, out_path, signal_label, duration_ms=900):
                    duration=duration_ms, loop=0)
 
 
+def plot_roc_by_subtype(subtype_roc, signal_classes, out_path):
+    """Trajectory classifier ROC (fully revealed), one curve per lensed
+    subtype. Each subtype's own held-out test events are scored as "signal"
+    against the SAME unlensed background test set, using the SAME already-
+    fit all_lensed classifier -- the decision boundary is not refit per
+    subtype, and other lensed subtypes never enter a given subtype's curve
+    (so they are never counted as false positives for it).
+    """
+    fig, ax = plt.subplots(figsize=(6, 6))
+    for c in signal_classes:
+        fpr, tpr, _ = subtype_roc[c]
+        ax.plot(fpr, tpr, color=CLASS_COLORS[c], lw=2, label=f'{c} (AUC={auc(fpr, tpr):.3f})')
+    ax.plot([0, 1], [0, 1], 'k--', lw=1, alpha=0.5, label='chance')
+    ax.set_xlabel('False positive rate')
+    ax.set_ylabel('True positive rate (recovery)')
+    ax.set_title('Trajectory classifier ROC per lensed subtype (held-out)\n'
+                'signal: all lensed (boundary fit once, pooled)')
+    ax.legend(loc='lower right', fontsize=8)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _rate_ylim(rate_by_class, classes):
+    """Shared y-limits across a set of classes' per-step rates, for a
+    log-scale axis that stays fixed across plot_rate_by_subtype's two
+    panels and every make_rate_gif frame -- otherwise each frame's y-axis
+    would auto-rescale as more steps are revealed, which reads as the data
+    changing rather than just more of it appearing.
+    """
+    vals = [v for c in classes for v in rate_by_class[c].values() if v > 0]
+    if not vals:
+        return 1e-10, 1.0
+    return min(vals) * 0.5, max(vals) * 2.0
+
+
+def _draw_rate_panel(ax, rate_by_class, classes, days, marker, title, ylabel, ylim):
+    for c in classes:
+        ys = [rate_by_class[c][d] for d in days]
+        ax.plot(days, ys, marker=marker, ms=8, lw=1.6, color=CLASS_COLORS[c], label=c)
+    ax.set_yscale('log')
+    ax.set_ylim(*ylim)
+    ax.set_xlabel('Δt since trigger (days)')
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(fontsize=7)
+
+
+def plot_rate_by_subtype(rate_by_class, signal_classes, out_path):
+    """Weighted recovered/false-positive rate per class vs Δt-since-trigger,
+    at the TrajectoryClassifier's already-pinned target_fpr threshold (not
+    swept like an ROC curve). Relative units -- Σ rate-weight of flagged
+    events -- not an absolute events/year calibration; see this module's
+    docstring. Left panel: lensed subtypes (recovered rate, true
+    positives). Right panel: unlensed classes (false-positive rate). A
+    class/step with zero flagged weight is simply absent from its
+    log-scale line (matplotlib drops non-positive points), not an error.
+    """
+    background_classes = [c for c in CLASSES if c not in signal_classes]
+    days = list(TRAJECTORY_GRID)
+    ylim_sig = _rate_ylim(rate_by_class, signal_classes)
+    ylim_bg = _rate_ylim(rate_by_class, background_classes)
+
+    fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(12, 5.5), sharex=True)
+    _draw_rate_panel(ax_l, rate_by_class, signal_classes, days, '*',
+                     'Recovered rate -- lensed subtypes',
+                     'weighted recovered rate (relative units)', ylim_sig)
+    _draw_rate_panel(ax_r, rate_by_class, background_classes, days, '.',
+                     'False-positive rate -- unlensed classes',
+                     'weighted false-positive rate (relative units)', ylim_bg)
+    fig.suptitle('Weighted recovered / false-positive rate vs time-since-trigger '
+                '(all_lensed target, relative units)')
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(out_path, dpi=140)
+    plt.close(fig)
+
+
+def make_rate_gif(rate_by_class, signal_classes, out_path, duration_ms=900):
+    """Animated version of plot_rate_by_subtype: each frame reveals one more
+    Δt-since-trigger grid step (x-truncated to the steps shown so far),
+    mirroring make_roc_gif's progressive reveal. Y-limits are fixed across
+    frames (see _rate_ylim) so only the revealed data changes, not the
+    axis scale.
+    """
+    background_classes = [c for c in CLASSES if c not in signal_classes]
+    days = list(TRAJECTORY_GRID)
+    ylim_sig = _rate_ylim(rate_by_class, signal_classes)
+    ylim_bg = _rate_ylim(rate_by_class, background_classes)
+    frames = []
+
+    for k in range(len(days)):
+        shown = days[:k + 1]
+        fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(12, 5.5), sharex=True)
+        _draw_rate_panel(ax_l, rate_by_class, signal_classes, shown, '*',
+                         'Recovered rate -- lensed subtypes',
+                         'weighted recovered rate (relative units)', ylim_sig)
+        _draw_rate_panel(ax_r, rate_by_class, background_classes, shown, '.',
+                         'False-positive rate -- unlensed classes',
+                         'weighted false-positive rate (relative units)', ylim_bg)
+        ax_l.set_xlim(days[0], days[-1])
+        ax_r.set_xlim(days[0], days[-1])
+        fig.suptitle(f'Weighted recovered/false-positive rate -- revealed through +{days[k]:.0f}d')
+        fig.tight_layout(rect=(0, 0, 1, 0.94))
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=110)
+        plt.close(fig)
+        buf.seek(0)
+        frames.append(Image.open(buf).convert('P', palette=Image.ADAPTIVE))
+
+    frames[0].save(out_path, save_all=True, append_images=frames[1:],
+                   duration=duration_ms, loop=0)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--data-dir', required=True, help='directory of per-class <name>.pkl files')
@@ -176,6 +316,33 @@ def main():
     traj_roc = traj_clf.roc_curve(sig_test, bg_test, sig_test_w, bg_test_w)
     by_step = traj_clf.roc_curve_by_step(sig_test, bg_test, sig_test_w, bg_test_w)
 
+    if args.target == 'all_lensed':
+        # Per-subtype evaluation against the SAME already-fit traj_clf (no
+        # refit) and the SAME unlensed background test set -- see module
+        # docstring. sig_test/bg_test events each carry their own 'class'
+        # (set at generation time), so subtype subsets are a plain filter.
+        subtype_roc, subtype_by_step = {}, {}
+        for c in signal_classes:
+            sub_test = [e for e in sig_test if e['class'] == c]
+            sub_test_w = [e['weight'] for e in sub_test]
+            subtype_roc[c] = traj_clf.roc_curve(sub_test, bg_test, sub_test_w, bg_test_w)
+            subtype_by_step[c] = traj_clf.roc_curve_by_step(sub_test, bg_test, sub_test_w, bg_test_w)
+
+        rate_by_class = {}
+        for c in CLASSES:
+            pool = sig_test if c in signal_classes else bg_test
+            c_test = [e for e in pool if e['class'] == c]
+            c_test_w = np.array([e['weight'] for e in c_test], dtype=float)
+            per_step = {}
+            for k, day in enumerate(TRAJECTORY_GRID):
+                if len(c_test) == 0:
+                    per_step[day] = 0.0
+                    continue
+                partial = [reveal_up_to(e, k, TRAJECTORY_GRID) for e in c_test]
+                flagged = traj_clf.predict(partial)
+                per_step[day] = float(c_test_w[flagged].sum())
+            rate_by_class[c] = per_step
+
     overall_path = os.path.join(args.out_dir, f'roc_overall{file_suffix}.png')
     by_step_path = os.path.join(args.out_dir, f'roc_by_step{file_suffix}.png')
     gif_path = os.path.join(args.out_dir, f'roc_by_step{file_suffix}.gif')
@@ -187,6 +354,26 @@ def main():
     print(f'wrote {overall_path}')
     print(f'wrote {by_step_path}')
     print(f'wrote {gif_path}')
+
+    if args.target == 'all_lensed':
+        subtype_overall_path = os.path.join(args.out_dir, 'roc_by_subtype_alllensed.png')
+        plot_roc_by_subtype(subtype_roc, signal_classes, subtype_overall_path)
+        print(f'wrote {subtype_overall_path}')
+
+        for c in signal_classes:
+            step_path = os.path.join(args.out_dir, f'roc_by_step_{c}_alllensed.png')
+            step_gif_path = os.path.join(args.out_dir, f'roc_by_step_{c}_alllensed.gif')
+            plot_roc_by_step(subtype_by_step[c], step_path, f'{c} (vs unlensed background)')
+            make_roc_gif(subtype_by_step[c], step_gif_path, f'{c} (vs unlensed background)')
+            print(f'wrote {step_path}')
+            print(f'wrote {step_gif_path}')
+
+        rate_path = os.path.join(args.out_dir, 'rate_by_subtype_alllensed.png')
+        rate_gif_path = os.path.join(args.out_dir, 'rate_by_subtype_alllensed.gif')
+        plot_rate_by_subtype(rate_by_class, signal_classes, rate_path)
+        make_rate_gif(rate_by_class, signal_classes, rate_gif_path)
+        print(f'wrote {rate_path}')
+        print(f'wrote {rate_gif_path}')
 
 
 if __name__ == '__main__':

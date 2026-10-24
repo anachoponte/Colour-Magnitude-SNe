@@ -21,6 +21,14 @@ renders four figures per band pair:
     at weight-scaled alpha: point density, not opacity, then encodes each
     class's weighted distribution (see `plot_resampled_sources_corner`).
 
+Under `--target all_lensed` only, three more figures repeat the `_sources`/
+`_corner`/`_resampled` layouts with every class collapsed to a 2-colour,
+2-symbol scheme (`binary_colour=True`) -- one colour+star for every lensed_*
+class, one colour+dot for every unlensed_* class -- instead of the 10-way
+per-class tab10 palette, for a reading that only cares about lensed vs
+unlensed, not which specific subtype. Filenames get an extra `_binary`
+suffix: `boundary_<pair>_sources_alllensed_binary.png`, etc.
+
 A class's discrete events are NOT uniformly realistic: `cmsne.multicolour`'s
 rate_weight() assigns per-event weights spanning many orders of magnitude
 (for the real production population behind these figures, lensed Ia weights
@@ -76,6 +84,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.colors import to_rgba
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -94,6 +103,16 @@ N_MARGINAL_BINS = 30
 HEATMAP_LEVELS = np.linspace(0, 1, 21)
 N_RESAMPLE = 2000
 RESAMPLE_SEED = 0
+
+# 2-colour, 2-symbol palette for binary_colour=True: lensed vs unlensed,
+# collapsing the 10-way per-class tab10 palette used everywhere else.
+BINARY_COLORS = {True: to_rgba('tab:blue'), False: to_rgba('tab:orange')}
+
+
+def _binary_legend_handles():
+    handles = [Line2D([0], [0], color=BINARY_COLORS[True], lw=1.6, marker='*', markersize=8),
+              Line2D([0], [0], color=BINARY_COLORS[False], lw=0.9)]
+    return handles, ['lensed', 'unlensed']
 
 
 def shared_ranges(signal, background, signal_weights, background_weights,
@@ -201,7 +220,7 @@ def _corner_panel(fig, outer_spec):
 
 def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                            colour_range, magnitude_range, colors, signal_classes,
-                           emphasize_signal_edge=False, zorder=1):
+                           emphasize_signal_edge=False, zorder=1, binary_colour=False):
     """Draw every class's weight-rated scatter onto ax_main, plus weighted,
     density-normalised marginal histograms onto ax_top (magnitude) and
     ax_right (colour)."""
@@ -220,8 +239,9 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
         if colours.size == 0:
             continue
         is_signal = c in signal_classes
+        point_color = BINARY_COLORS[is_signal] if binary_colour else colors[i]
         alphas = _weight_alpha(weights, alpha_range=(0.08, 0.9) if is_signal else (0.02, 0.6))
-        rgba = np.tile(colors[i], (len(alphas), 1))
+        rgba = np.tile(point_color, (len(alphas), 1))
         rgba[:, 3] = alphas
         edgecolors = 'black' if (is_signal and emphasize_signal_edge) else 'none'
         ax_main.scatter(mags, colours, s=16 if is_signal else 3,
@@ -234,9 +254,9 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
             # would otherwise silently draw a NaN-filled (invisible) step.
             lw = 1.6 if is_signal else 0.9
             ax_top.hist(mags, bins=mag_bins, weights=weights, density=True,
-                       histtype='step', color=colors[i], linewidth=lw)
+                       histtype='step', color=point_color, linewidth=lw)
             ax_right.hist(colours, bins=colour_bins, weights=weights, density=True,
-                         histtype='step', orientation='horizontal', color=colors[i], linewidth=lw)
+                         histtype='step', orientation='horizontal', color=point_color, linewidth=lw)
 
     ax_main.set_xlim(*magnitude_range)
     ax_main.set_ylim(*colour_range)
@@ -253,7 +273,8 @@ def _class_legend_handles(colors, signal_classes):
 
 
 def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitude_range,
-                                 signal_classes, signal_label, grid=TRAJECTORY_GRID):
+                                 signal_classes, signal_label, grid=TRAJECTORY_GRID,
+                                 binary_colour=False):
     """Weight-rated corner-style companion to the boundary figure: for each
     grid step, a main colour-magnitude scatter (per-point alpha from each
     event's own rate weight, see _weight_alpha) plus weighted, density-
@@ -267,16 +288,21 @@ def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitud
     for col, day in enumerate(grid):
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
-                               colour_range, magnitude_range, colors, signal_classes)
+                               colour_range, magnitude_range, colors, signal_classes,
+                               binary_colour=binary_colour)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
             ax_main.tick_params(labelleft=False)
 
-    fig.legend(_class_legend_handles(colors, signal_classes), CLASSES, fontsize=7,
-              loc='upper left', bbox_to_anchor=(0.90, 0.88))
+    if binary_colour:
+        handles, labels = _binary_legend_handles()
+    else:
+        handles, labels = _class_legend_handles(colors, signal_classes), CLASSES
+    fig.legend(handles, labels, fontsize=7, loc='upper left', bbox_to_anchor=(0.90, 0.88))
+    binary_note = ' (binary colour: lensed vs unlensed)' if binary_colour else ''
     fig.suptitle(f'Weight-rated discrete sources behind the {pair_key} boundary figure '
-                f'(signal: {signal_label})\n'
+                f'(signal: {signal_label}){binary_note}\n'
                 f'(point alpha ~ log rate weight; top/right: weighted class histograms)',
                 fontsize=10)
     fig.subplots_adjust(left=0.04, right=0.89, top=0.84, bottom=0.08)
@@ -286,7 +312,7 @@ def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitud
 
 def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                             colour_range, magnitude_range, colors, rng, signal_classes,
-                            n_resample=N_RESAMPLE):
+                            n_resample=N_RESAMPLE, binary_colour=False):
     """Draw each class as a weighted bootstrap resample rather than every raw
     event at weight-scaled alpha: `n_resample` points are drawn with
     replacement per class, with probability proportional to each event's own
@@ -318,15 +344,16 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
         idx = rng.choice(colours.size, size=n_resample, replace=True, p=weights / wsum)
         rcolours, rmags = colours[idx], mags[idx]
         is_signal = c in signal_classes
+        point_color = BINARY_COLORS[is_signal] if binary_colour else colors[i]
         ax_main.scatter(rmags, rcolours, s=16 if is_signal else 3,
-                       marker='*' if is_signal else '.', color=colors[i],
+                       marker='*' if is_signal else '.', color=point_color,
                        alpha=0.35 if is_signal else 0.15,
                        rasterized=True, zorder=1)
         lw = 1.6 if is_signal else 0.9
         ax_top.hist(rmags, bins=mag_bins, density=True, histtype='step',
-                   color=colors[i], linewidth=lw)
+                   color=point_color, linewidth=lw)
         ax_right.hist(rcolours, bins=colour_bins, density=True, histtype='step',
-                     orientation='horizontal', color=colors[i], linewidth=lw)
+                     orientation='horizontal', color=point_color, linewidth=lw)
 
     ax_main.set_xlim(*magnitude_range)
     ax_main.set_ylim(*colour_range)
@@ -336,7 +363,7 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
 
 def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitude_range,
                                   signal_classes, signal_label, grid=TRAJECTORY_GRID,
-                                  n_resample=N_RESAMPLE, seed=RESAMPLE_SEED):
+                                  n_resample=N_RESAMPLE, seed=RESAMPLE_SEED, binary_colour=False):
     """Corner-style companion like plot_weighted_sources_corner, but drawing a
     weighted resample of each class (see _draw_resampled_sources) instead of
     every raw event at weight-scaled alpha -- point density directly
@@ -353,16 +380,20 @@ def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitu
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
         _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                                 colour_range, magnitude_range, colors, rng, signal_classes,
-                                n_resample=n_resample)
+                                n_resample=n_resample, binary_colour=binary_colour)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
             ax_main.tick_params(labelleft=False)
 
-    fig.legend(_class_legend_handles(colors, signal_classes), CLASSES, fontsize=7,
-              loc='upper left', bbox_to_anchor=(0.90, 0.88))
+    if binary_colour:
+        handles, labels = _binary_legend_handles()
+    else:
+        handles, labels = _class_legend_handles(colors, signal_classes), CLASSES
+    fig.legend(handles, labels, fontsize=7, loc='upper left', bbox_to_anchor=(0.90, 0.88))
+    binary_note = ' (binary colour: lensed vs unlensed)' if binary_colour else ''
     fig.suptitle(f'Weighted resample ({n_resample}/class/step) of discrete sources behind '
-                f'the {pair_key} boundary figure (signal: {signal_label})\n'
+                f'the {pair_key} boundary figure (signal: {signal_label}){binary_note}\n'
                 f'(point density ~ rate weight, not alpha; top/right: resampled class histograms)',
                 fontsize=10)
     fig.subplots_adjust(left=0.04, right=0.89, top=0.84, bottom=0.08)
@@ -371,7 +402,7 @@ def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitu
 
 
 def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, magnitude_range,
-                             signal_classes, signal_label, grid=TRAJECTORY_GRID):
+                             signal_classes, signal_label, grid=TRAJECTORY_GRID, binary_colour=False):
     """Same corner layout as plot_weighted_sources_corner, with the already-
     fitted P(signal) posterior surface (from compute_surfaces -- not
     re-fitted here) underlaid in each main panel beneath the weighted
@@ -390,7 +421,7 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
         ax_main.contour(mg.T, cg.T, pg.T, levels=[0.5], colors='white', linewidths=1.0, zorder=1)
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                                colour_range, magnitude_range, colors, signal_classes,
-                               emphasize_signal_edge=True, zorder=2)
+                               emphasize_signal_edge=True, zorder=2, binary_colour=binary_colour)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
@@ -398,10 +429,14 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
 
     cax = fig.add_axes((0.91, 0.55, 0.012, 0.28))
     fig.colorbar(mesh, cax=cax, label=f'P({signal_label})')
-    fig.legend(_class_legend_handles(colors, signal_classes), CLASSES, fontsize=7,
-              loc='upper left', bbox_to_anchor=(0.91, 0.42))
+    if binary_colour:
+        handles, labels = _binary_legend_handles()
+    else:
+        handles, labels = _class_legend_handles(colors, signal_classes), CLASSES
+    fig.legend(handles, labels, fontsize=7, loc='upper left', bbox_to_anchor=(0.91, 0.42))
+    binary_note = ' (binary colour: lensed vs unlensed)' if binary_colour else ''
     fig.suptitle(f'P({signal_label}) heatmap + weight-rated discrete sources -- '
-                f'{pair_key[0]}-{pair_key[1]} colour, evolution since trigger', fontsize=10)
+                f'{pair_key[0]}-{pair_key[1]} colour, evolution since trigger{binary_note}', fontsize=10)
     fig.subplots_adjust(left=0.04, right=0.89, top=0.84, bottom=0.08)
     fig.savefig(out_path, dpi=140)
     plt.close(fig)
@@ -467,6 +502,23 @@ def main():
         plot_resampled_sources_corner(pop, pair_key, resampled_path, colour_range, magnitude_range,
                                       signal_classes, signal_label)
         print(f'wrote {resampled_path}')
+
+        if args.target == 'all_lensed':
+            sources_bin_path = os.path.join(args.out_dir, f'boundary_{pair_key}_sources{file_suffix}_binary.png')
+            corner_bin_path = os.path.join(args.out_dir, f'boundary_{pair_key}_corner{file_suffix}_binary.png')
+            resampled_bin_path = os.path.join(args.out_dir, f'boundary_{pair_key}_resampled{file_suffix}_binary.png')
+
+            plot_weighted_sources_corner(pop, pair_key, sources_bin_path, colour_range, magnitude_range,
+                                         signal_classes, signal_label, binary_colour=True)
+            print(f'wrote {sources_bin_path}')
+
+            plot_corner_with_heatmap(pop, surfaces, pair_key, corner_bin_path, colour_range, magnitude_range,
+                                     signal_classes, signal_label, binary_colour=True)
+            print(f'wrote {corner_bin_path}')
+
+            plot_resampled_sources_corner(pop, pair_key, resampled_bin_path, colour_range, magnitude_range,
+                                          signal_classes, signal_label, binary_colour=True)
+            print(f'wrote {resampled_bin_path}')
 
 
 if __name__ == '__main__':
