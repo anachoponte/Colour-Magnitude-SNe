@@ -5,7 +5,7 @@ the trajectory's Δt-since-trigger grid (issue #18).
 added in PR #14) -- it has just never been run on real data or plotted. This
 script does both: loads a real dual-schema production population, fits one
 2-feature classifier per (band pair, grid step) via `posterior_surface`, and
-renders three figures per band pair:
+renders four figures per band pair:
 
   - `boundary_<pair>.png` -- the P(lensed Ia) heatmap alone, one panel per
     grid step.
@@ -16,6 +16,10 @@ renders three figures per band pair:
     right (colour).
   - `boundary_<pair>_corner.png` -- the same corner layout, with the
     posterior surface heatmap underlaid in each main panel.
+  - `boundary_<pair>_resampled.png` -- the same corner layout again, but
+    plotting a weighted *resample* of each class rather than every raw event
+    at weight-scaled alpha: point density, not opacity, then encodes each
+    class's weighted distribution (see `plot_resampled_sources_corner`).
 
 A class's discrete events are NOT uniformly realistic: `cmsne.multicolour`'s
 rate_weight() assigns per-event weights spanning many orders of magnitude
@@ -39,6 +43,13 @@ rate-weighted and percentile-based (`cmsne.contours.robust_range`, issue
 band pair's posterior surfaces are fitted once (`compute_surfaces`) and
 reused by both the heatmap-only and the combined corner+heatmap figure, so
 the (expensive) classifier fit never runs twice for the same band pair.
+
+Every heatmap's contourf call passes explicit bin edges spanning the full
+[0, 1] probability range (`levels=np.linspace(0, 1, 21)`), not a bare
+integer level count: matplotlib's `levels=N` autoscales those bins to the
+*data's* actual range when N is an int, which silently clipped the colorbar
+to whatever maximum a given grid step/band pair happened to reach (e.g.
+0-0.5) instead of the fixed 0-1 scale every panel should share.
 
 Axes follow the lensing-literature convention: magnitude on x, colour on y
 (not the stellar-CMD convention of colour on x, magnitude on y).
@@ -67,6 +78,9 @@ CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn
 PAIR_KEYS = [f'{a[-1]}{b[-1]}' for a, b in ADJ_COLOURS]
 
 N_MARGINAL_BINS = 30
+HEATMAP_LEVELS = np.linspace(0, 1, 21)
+N_RESAMPLE = 2000
+RESAMPLE_SEED = 0
 
 
 def shared_ranges(signal, background, signal_weights, background_weights,
@@ -118,7 +132,7 @@ def plot_boundary_evolution(surfaces, pair_key, out_path, grid=TRAJECTORY_GRID):
         # columns) by posterior_surface's np.meshgrid(colour, magnitude) --
         # transpose all three together to put magnitude on x, colour on y
         # (the lensing-literature convention) without touching their values.
-        mesh = ax.contourf(mg.T, cg.T, pg.T, levels=20, cmap='viridis', vmin=0, vmax=1)
+        mesh = ax.contourf(mg.T, cg.T, pg.T, levels=HEATMAP_LEVELS, cmap='viridis', vmin=0, vmax=1)
         ax.contour(mg.T, cg.T, pg.T, levels=[0.5], colors='white', linewidths=1.2)
         ax.set_title(f'+{day:.0f}d')
         ax.set_xlabel('peakmag (brightest-observed)')
@@ -256,6 +270,91 @@ def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitud
     plt.close(fig)
 
 
+def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
+                            colour_range, magnitude_range, colors, rng,
+                            n_resample=N_RESAMPLE):
+    """Draw each class as a weighted bootstrap resample rather than every raw
+    event at weight-scaled alpha: `n_resample` points are drawn with
+    replacement per class, with probability proportional to each event's own
+    rate weight, so point *density* (not opacity) encodes the class's
+    weighted distribution. Resampling is done per class independently (not
+    pooled across classes), matching _draw_weighted_sources' per-class alpha
+    scale -- lensed_Ia's total rate is many orders of magnitude below the
+    background classes', so pooling globally would make it vanish from the
+    plot entirely instead of showing where its (rare but real) weighted mass
+    sits.
+    """
+    suffix = _step_suffix(day)
+    colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
+    mag_bins = np.linspace(*magnitude_range, N_MARGINAL_BINS + 1)
+    colour_bins = np.linspace(*colour_range, N_MARGINAL_BINS + 1)
+
+    for i, c in enumerate(CLASSES):
+        events = pop[c]
+        colours = np.array([e.get(colour_key, np.nan) for e in events])
+        mags = np.array([e.get(magnitude_key, np.nan) for e in events])
+        weights = np.array([e['weight'] for e in events])
+        finite = np.isfinite(colours) & np.isfinite(mags)
+        colours, mags, weights = colours[finite], mags[finite], weights[finite]
+        wsum = weights.sum()
+        if colours.size == 0 or wsum <= 0:
+            # No finite events, or every one has zero weight -- nothing in
+            # this slice is realised, so there is nothing to resample.
+            continue
+        idx = rng.choice(colours.size, size=n_resample, replace=True, p=weights / wsum)
+        rcolours, rmags = colours[idx], mags[idx]
+        is_signal = c == 'lensed_Ia'
+        ax_main.scatter(rmags, rcolours, s=16 if is_signal else 3,
+                       marker='*' if is_signal else '.', color=colors[i],
+                       alpha=0.35 if is_signal else 0.15,
+                       rasterized=True, zorder=1)
+        lw = 1.6 if is_signal else 0.9
+        ax_top.hist(rmags, bins=mag_bins, density=True, histtype='step',
+                   color=colors[i], linewidth=lw)
+        ax_right.hist(rcolours, bins=colour_bins, density=True, histtype='step',
+                     orientation='horizontal', color=colors[i], linewidth=lw)
+
+    ax_main.set_xlim(*magnitude_range)
+    ax_main.set_ylim(*colour_range)
+    ax_main.set_xlabel('peakmag')
+    ax_top.set_title(f'+{day:.0f}d')
+
+
+def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitude_range,
+                                  grid=TRAJECTORY_GRID, n_resample=N_RESAMPLE, seed=RESAMPLE_SEED):
+    """Corner-style companion like plot_weighted_sources_corner, but drawing a
+    weighted resample of each class (see _draw_resampled_sources) instead of
+    every raw event at weight-scaled alpha -- point density directly
+    reflects each class's weighted distribution rather than relying on
+    opacity, which is easy to misjudge across >10 orders of magnitude of
+    weight and prone to overplotting from the sheer number of raw events.
+    """
+    fig = plt.figure(figsize=(4.2 * len(grid), 5.2))
+    outer = fig.add_gridspec(1, len(grid), wspace=0.35)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(CLASSES)))
+    rng = np.random.default_rng(seed)
+
+    for col, day in enumerate(grid):
+        ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
+        _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
+                                colour_range, magnitude_range, colors, rng,
+                                n_resample=n_resample)
+        if col == 0:
+            ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
+        else:
+            ax_main.tick_params(labelleft=False)
+
+    fig.legend(_class_legend_handles(colors), CLASSES, fontsize=7,
+              loc='upper left', bbox_to_anchor=(0.90, 0.88))
+    fig.suptitle(f'Weighted resample ({n_resample}/class/step) of discrete sources behind '
+                f'the {pair_key} boundary figure\n'
+                f'(point density ~ rate weight, not alpha; top/right: resampled class histograms)',
+                fontsize=10)
+    fig.subplots_adjust(left=0.04, right=0.89, top=0.84, bottom=0.08)
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+
+
 def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, magnitude_range,
                              grid=TRAJECTORY_GRID):
     """Same corner layout as plot_weighted_sources_corner, with the already-
@@ -272,7 +371,7 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
     for col, day in enumerate(grid):
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
         cg, mg, pg = surfaces[day]
-        mesh = ax_main.contourf(mg.T, cg.T, pg.T, levels=20, cmap='viridis', vmin=0, vmax=1, zorder=0)
+        mesh = ax_main.contourf(mg.T, cg.T, pg.T, levels=HEATMAP_LEVELS, cmap='viridis', vmin=0, vmax=1, zorder=0)
         ax_main.contour(mg.T, cg.T, pg.T, levels=[0.5], colors='white', linewidths=1.0, zorder=1)
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                                colour_range, magnitude_range, colors,
@@ -316,6 +415,7 @@ def main():
         boundary_path = os.path.join(args.out_dir, f'boundary_{pair_key}.png')
         sources_path = os.path.join(args.out_dir, f'boundary_{pair_key}_sources.png')
         corner_path = os.path.join(args.out_dir, f'boundary_{pair_key}_corner.png')
+        resampled_path = os.path.join(args.out_dir, f'boundary_{pair_key}_resampled.png')
         print(f'fitting {pair_key} ({len(TRAJECTORY_GRID)} grid steps)...')
         try:
             colour_range, magnitude_range = shared_ranges(
@@ -335,6 +435,9 @@ def main():
 
         plot_corner_with_heatmap(pop, surfaces, pair_key, corner_path, colour_range, magnitude_range)
         print(f'wrote {corner_path}')
+
+        plot_resampled_sources_corner(pop, pair_key, resampled_path, colour_range, magnitude_range)
+        print(f'wrote {resampled_path}')
 
 
 if __name__ == '__main__':
