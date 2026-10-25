@@ -925,6 +925,43 @@ check('DualSchemaGenerator inherits MultiColourGenerator API',
 check('DualSchemaGenerator._event_features uses the dual schema',
       set(_dg._event_features(_lcd, 15.0, 5.0)) >= {'gr', 'peakmag', 'gr_d0', 'peakmag_d60'})
 
+print('\n=== importance_sampling: effective sample size + sparse-cell diagnosis ===')
+from cmsne import importance_sampling as isamp
+
+check('ESS of uniform weights equals N',
+      np.isclose(isamp.effective_sample_size(np.ones(50)), 50.0))
+check('ESS of one dominant weight collapses toward 1',
+      isamp.effective_sample_size(np.array([100.0, 0.01, 0.01, 0.01])) < 1.1)
+check('ESS of empty/all-zero weights is 0.0',
+      isamp.effective_sample_size(np.array([])) == 0.0 and
+      isamp.effective_sample_size(np.zeros(5)) == 0.0)
+
+# 4x4 grid over gr in [0,4], peakmag in [20,24]: fill every cell densely except one.
+_rng_d = np.random.default_rng(0)
+_dense_events, _dense_w = [], []
+for _i in range(4):
+    for _j in range(4):
+        n_pts = 2 if (_i, _j) == (3, 3) else 30   # (3,3) is the deliberately sparse cell
+        for _ in range(n_pts):
+            _dense_events.append({'gr': _i + float(_rng_d.uniform(0, 1)),
+                                  'peakmag': 20 + _j + float(_rng_d.uniform(0, 1))})
+            _dense_w.append(1.0)
+_dense_w = np.array(_dense_w)
+# include a point exactly at the max of each axis, to check the inclusive top bin
+_dense_events.append({'gr': 4.0, 'peakmag': 24.0})
+_dense_w = np.r_[_dense_w, 1.0]
+
+_flagged = isamp.diagnose_sparse_cells(_dense_events, _dense_w, band_pair_keys=['gr'],
+                                       magnitude_key='peakmag', n_bins=4, ess_floor_fraction=0.2)
+check('diagnose_sparse_cells flags the deliberately sparse cell',
+      any(np.isclose(f['colour_range'][0], 3.0, atol=0.05) and np.isclose(f['magnitude_range'][0], 23.0, atol=0.05)
+          for f in _flagged), _flagged)
+check('diagnose_sparse_cells does not flag the densely-filled cells',
+      not any(np.isclose(f['colour_range'][0], 0.0, atol=0.05) and np.isclose(f['magnitude_range'][0], 20.0, atol=0.05)
+              for f in _flagged), _flagged)
+check('every flagged cell reports its ESS below its floor',
+      all(f['ess'] < f['floor'] for f in _flagged), _flagged)
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
