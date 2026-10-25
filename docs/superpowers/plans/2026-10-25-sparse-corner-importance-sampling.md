@@ -302,11 +302,16 @@ def fit_boost_proposal(events, weights, colour_key, magnitude_key, colour_range,
     idx = np.where(in_cell)[0]
     z = np.array([events[i]['z'] for i in idx], dtype=float)
     w = weights[idx]
-    enough_z = np.sum(w > 0) >= MIN_POINTS_FOR_KDE and len(np.unique(z)) > 1
+    pos = w > 0
+    # Degeneracy must be checked over the weighted-positive events only: a cell
+    # can have >=MIN_POINTS_FOR_KDE positive-weight events sharing one z/mu while
+    # zero-weight events in the same cell vary, which would otherwise slip past
+    # this guard and crash gaussian_kde with a singular covariance matrix.
+    enough_z = np.sum(pos) >= MIN_POINTS_FOR_KDE and len(np.unique(z[pos])) > 1
 
     if lensed:
         mu = np.array([events[i]['magnification'] for i in idx], dtype=float)
-        if enough_z and len(np.unique(mu)) > 1:
+        if enough_z and len(np.unique(mu[pos])) > 1:
             return {'kde': gaussian_kde(np.vstack([z, mu]), weights=w), 'fallback': None}
         if len(z) > 0:
             pad_z = max(0.01, 0.1 * (z.max() - z.min()))

@@ -10,7 +10,7 @@
     {
       "id": 8,
       "subject": "Task 2: Boost-proposal fitting and latent sampling",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [7],
       "description": "**Goal:** Add `fit_boost_proposal` (weighted KDE over latent `(z[, magnification])` for a flagged cell, with two fallback tiers), `sample_latent`, and `_proposal_density` to `cmsne/importance_sampling.py`.\n\n**Files:**\n- Modify: `cmsne/importance_sampling.py`\n- Test: `tests/test_cmsne.py` (same section, extended)\n\n**Acceptance Criteria:**\n- [ ] `fit_boost_proposal` fits a weighted `gaussian_kde` when enough points exist: 2D (z, magnification) for lensed, 1D (z only) for unlensed.\n- [ ] Falls back to a padded box when too few (but nonzero) points exist, and to the full prior range when zero points exist.\n- [ ] `sample_latent` clips draws to `z_range`/`magnification_range`.\n- [ ] `_proposal_density` returns 0.0 outside a box fallback's bounds.\n- [ ] `python tests/test_cmsne.py` reports `0 failed`.\n\n**Verify:** `python tests/test_cmsne.py` -> `===== N passed, 0 failed =====`\n\nFull task text is in `docs/superpowers/plans/2026-10-25-sparse-corner-importance-sampling.md` under \"## Task 2\".\n\n```json:metadata\n{\"files\": [\"cmsne/importance_sampling.py\", \"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"fit_boost_proposal fits a 2D weighted KDE for lensed, 1D for unlensed, when enough points exist\", \"falls back to a padded box when too few points, and to the full prior range when zero points\", \"sample_latent clips draws to z_range/magnification_range\", \"_proposal_density returns 0.0 outside a box fallback's bounds\", \"python tests/test_cmsne.py reports 0 failed\"], \"modelTier\": \"mechanical\"}\n```"
     },
@@ -36,5 +36,5 @@
       "description": "**Goal:** Prove `generate_with_boosting(..., pilot_frac=1.0)` reproduces today's exact per-event weight on production-shaped data (not just the toy `_FakeGen` from Task 3).\n\n**Files:**\n- Test: `tests/test_cmsne.py` (same section, extended)\n\n**Acceptance Criteria:**\n- [ ] Production-shaped events through a pass-through fake generator: `rate_weight(...)` directly and via `generate_with_boosting` at `pilot_frac=1.0` give identical weights.\n- [ ] `python tests/test_cmsne.py` reports `0 failed`.\n\n**Verify:** `python tests/test_cmsne.py` -> `===== N passed, 0 failed =====`\n\nFull task text is in `docs/superpowers/plans/2026-10-25-sparse-corner-importance-sampling.md` under \"## Task 5\".\n\n```json:metadata\n{\"files\": [\"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"generate_with_boosting(pilot_frac=1.0) matches bare rate_weight on production-shaped events\", \"python tests/test_cmsne.py reports 0 failed\"], \"modelTier\": \"mechanical\"}\n```"
     }
   ],
-  "lastUpdated": "2026-10-25T01:00:00Z"
+  "lastUpdated": "2026-10-25T02:00:00Z"
 }
