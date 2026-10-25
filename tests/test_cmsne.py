@@ -1106,6 +1106,35 @@ check('unlensed boosting keeps magnification fixed at 1.0 for every event',
       all(e['magnification'] == 1.0 for e in _events_u))
 
 
+class _FakeGenWithDrops(_FakeGen):
+    """Like _FakeGen, but generate_one returns None on every 3rd call, to
+    exercise dropped boost draws."""
+    def __init__(self):
+        self.calls = 0
+
+    def generate_one(self, z, abs_mag, magnification, times, ra, dec, mjd_high=None):
+        self.calls += 1
+        if self.calls % 3 == 0:
+            return None
+        return self._to_event(z, magnification)
+
+
+np.random.seed(0)
+_events_d, _info_d = isamp.generate_with_boosting(
+    _FakeGenWithDrops(), 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+    pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+_attempted_total = _info_d['n_pilot'] + _info_d['n_boost']
+check('dropped boost draws are handled: function completes and population is smaller than attempted',
+      len(_events_d) < _attempted_total and len(_events_d) >= _info_d['n_pilot'],
+      (len(_events_d), _attempted_total))
+check('every event still has a finite, positive weight when boost draws are dropped',
+      all(np.isfinite(e['weight']) and e['weight'] > 0 for e in _events_d), len(_events_d))
+check('flagged-cell bookkeeping stays consistent when boost draws are dropped',
+      len(_info_d['flagged_cells']) > 0 and
+      all('fallback' in c and c['band_pair'] for c in _info_d['flagged_cells']),
+      len(_info_d['flagged_cells']))
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
