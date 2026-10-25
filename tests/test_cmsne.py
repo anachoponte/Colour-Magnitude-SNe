@@ -1232,6 +1232,225 @@ check('generate_with_boosting(pilot_frac=1.0) matches bare rate_weight on produc
       all(np.isclose(e['weight'], _toy_rate_weight(e['z'], e['magnification'])) for e in _events_pc) and
       len(_events_pc) == len(_prod_shaped_events) and _info_pc['n_boost'] == 0)
 
+print('\n=== local density-ratio blend: kernel/bandwidth helpers ===')
+from cmsne.classifier import _weighted_std, _scott_bandwidths, _kernel_weighted_values
+
+_ws_vals = np.array([1.0, 2.0, 3.0, 4.0, np.nan])
+_ws_wts = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
+check('_weighted_std ignores NaN and matches plain std of the finite subset',
+      np.isclose(_weighted_std(_ws_vals, _ws_wts), np.std([1.0, 2.0, 3.0, 4.0]), atol=1e-9),
+      _weighted_std(_ws_vals, _ws_wts))
+check('_weighted_std returns the safe fallback 1.0 for a degenerate (all-equal) column',
+      _weighted_std(np.array([5.0, 5.0, 5.0]), np.array([1.0, 1.0, 1.0])) == 1.0)
+check('_weighted_std returns the safe fallback 1.0 for fewer than 2 finite entries',
+      _weighted_std(np.array([5.0, np.nan]), np.array([1.0, 1.0])) == 1.0)
+
+_bw_X = np.column_stack([np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
+                         np.array([10.0, 10.0, 10.0, 10.0, 10.0])])
+_bw_w = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
+_bw = _scott_bandwidths(_bw_X, _bw_w)
+check('_scott_bandwidths returns one positive, finite bandwidth per column',
+      _bw.shape == (2,) and np.all(_bw > 0) and np.all(np.isfinite(_bw)), str(_bw))
+check('_scott_bandwidths gives the degenerate (constant) column the smaller bandwidth',
+      _bw[1] < _bw[0], str(_bw))
+
+_kw_X = np.array([[0.0], [1.0], [10.0]])
+_kw_w = np.array([1.0, 1.0, 1.0])
+_kw_h = np.array([1.0])
+_kw_dims = np.array([0])
+_kw_vals = _kernel_weighted_values(np.array([0.0]), _kw_X, _kw_w, _kw_h, _kw_dims)
+check('_kernel_weighted_values peaks at the exact-match training row',
+      _kw_vals[0] > _kw_vals[1] > _kw_vals[2], str(_kw_vals))
+check('_kernel_weighted_values matches weight*1.0 exactly at zero distance',
+      np.isclose(_kw_vals[0], 1.0), _kw_vals[0])
+check('_kernel_weighted_values returns zeros for empty dims',
+      np.all(_kernel_weighted_values(np.array([0.0]), _kw_X, _kw_w, _kw_h, np.array([], dtype=int)) == 0.0))
+check('_kernel_weighted_values returns zeros for zero training rows',
+      np.all(_kernel_weighted_values(np.array([0.0]), np.zeros((0, 1)), np.zeros(0), _kw_h, _kw_dims) == 0.0))
+
+print('\n=== local density-ratio blend: density ratio and blend weight ===')
+from cmsne.classifier import _local_density_ratio, _blend_weight
+
+_ldr_h = np.array([1.0])
+_ldr_dims = np.array([0])
+# Signal clustered at x=0; background far away (20 bandwidths), contributes
+# essentially nothing to the kernel sum there.
+_ldr_Xs = np.array([[0.0], [0.1], [-0.1]])
+_ldr_ws = np.array([1e-5, 1e-5, 1e-5])
+_ldr_Xb = np.array([[20.0], [21.0], [19.0]])
+_ldr_wb = np.array([1e-5, 1e-5, 1e-5])
+_p_kde, _ess_s, _ess_b = _local_density_ratio(
+    np.array([0.0]), _ldr_Xs, _ldr_ws, _ldr_Xb, _ldr_wb, _ldr_h, _ldr_dims)
+check('_local_density_ratio -> 1 when signal is local and background is many bandwidths away',
+      _p_kde is not None and np.isclose(_p_kde, 1.0, atol=1e-6), _p_kde)
+check('_local_density_ratio reports lower local ESS for the far-away class than the local class',
+      _ess_b < _ess_s, (_ess_b, _ess_s))
+
+# Symmetric case: swap roles.
+_p_kde2, _, _ = _local_density_ratio(
+    np.array([0.0]), _ldr_Xb, _ldr_wb, _ldr_Xs, _ldr_ws, _ldr_h, _ldr_dims)
+check('_local_density_ratio -> 0 when background is local and signal is far away',
+      _p_kde2 is not None and np.isclose(_p_kde2, 0.0, atol=1e-6), _p_kde2)
+
+# Degenerate case: both classes far from x.
+_p_kde3, _, _ = _local_density_ratio(
+    np.array([1000.0]), _ldr_Xs, _ldr_ws, _ldr_Xb, _ldr_wb, _ldr_h, _ldr_dims)
+check('_local_density_ratio returns None when both classes are far from x',
+      _p_kde3 is None, _p_kde3)
+
+check('_blend_weight is near 1.0 when both local ESS values are far above threshold',
+      _blend_weight(1e6, 1e6, ess_threshold=10.0, log_width=1.0) > 0.999)
+check('_blend_weight is near 0.0 when either local ESS value is far below threshold',
+      _blend_weight(1000.0, 0.01, ess_threshold=10.0, log_width=1.0) < 0.001)
+check('_blend_weight is driven by the MINIMUM of the two local ESS values, not their average',
+      _blend_weight(1000.0, 0.01, ess_threshold=10.0, log_width=1.0) ==
+      _blend_weight(0.01, 0.01, ess_threshold=10.0, log_width=1.0))
+
+
+print('\n=== local density-ratio blend: wired into ColourClassifier ===')
+from cmsne.classifier import ColourClassifier
+from cmsne.trajectory import TrajectoryClassifier
+
+# Dense bulk: plenty of both classes everywhere in a shared box -> alpha
+# should be close to 1, blended probability() close to tree-only score().
+_rng_dense = np.random.default_rng(3)
+_n_dense = 1500
+_dense_sig = [{'gr': float(_rng_dense.normal(1.0, 0.3)), 'peakmag': float(_rng_dense.normal(22.0, 1.0))}
+             for _ in range(_n_dense)]
+_dense_bg = [{'gr': float(_rng_dense.normal(1.2, 0.3)), 'peakmag': float(_rng_dense.normal(22.0, 1.0))}
+            for _ in range(_n_dense)]
+_dense_sw = np.full(_n_dense, 1e-5)
+_dense_bw = np.full(_n_dense, 1e-5)
+_clf_dense = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_dense.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
+_dense_pts = [{'gr': 1.0, 'peakmag': 22.0}, {'gr': 1.1, 'peakmag': 21.7}]
+_dense_blended = _clf_dense.probability(_dense_pts)
+_dense_tree_only = np.clip(_clf_dense.score(_dense_pts), 1e-12, 1 - 1e-12)
+check('dense region: blended probability() matches tree-only score() closely',
+      np.allclose(_dense_blended, _dense_tree_only, atol=1e-3),
+      (_dense_blended, _dense_tree_only))
+
+# Sparse corner: background NEVER appears past gr=3.0, signal has a few rare
+# points out there -- mimics the real bright+red bug at small scale.
+_rng_sparse = np.random.default_rng(4)
+_n_sparse = 1500
+_sparse_sig_bulk = [{'gr': float(_rng_sparse.normal(1.0, 0.3)), 'peakmag': float(_rng_sparse.normal(22.0, 1.0))}
+                    for _ in range(_n_sparse)]
+_sparse_sig_corner = [{'gr': float(_rng_sparse.normal(4.0, 0.1)), 'peakmag': float(_rng_sparse.normal(16.0, 0.1))}
+                      for _ in range(3)]
+_sparse_sig = _sparse_sig_bulk + _sparse_sig_corner
+_sparse_bg = [{'gr': float(_rng_sparse.normal(1.2, 0.3)), 'peakmag': float(_rng_sparse.normal(22.0, 1.0))}
+             for _ in range(_n_sparse)]
+_sparse_sw = np.full(len(_sparse_sig), 1e-5)
+_sparse_bw = np.full(_n_sparse, 1e-5)
+_clf_sparse = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_sparse.fit(_sparse_sig, _sparse_bg, _sparse_sw, _sparse_bw)
+_corner_pt = [{'gr': 4.0, 'peakmag': 16.0}]
+_corner_blended = _clf_sparse.probability(_corner_pt)[0]
+_corner_tree_only = np.clip(_clf_sparse.score(_corner_pt), 1e-12, 1 - 1e-12)[0]
+check('sparse corner: blended probability() is materially higher than tree-only score()',
+      _corner_blended > _corner_tree_only + 0.05,
+      (_corner_blended, _corner_tree_only))
+check('sparse corner: blended probability() is clearly above the balanced-prior midpoint',
+      _corner_blended > 0.7, _corner_blended)
+
+# No finite feature columns at all -> falls back to p_tree unchanged.
+_nan_pt = [{'gr': np.nan, 'peakmag': np.nan}]
+_nan_blended = _clf_dense.probability(_nan_pt)
+_nan_tree_only = np.clip(_clf_dense.score(_nan_pt), 1e-12, 1 - 1e-12)
+check('event with no finite columns falls back to tree-only probability unchanged',
+      np.allclose(_nan_blended, _nan_tree_only))
+
+# Two distinct finite-column patterns in the same call.
+_clf_multi = ColourClassifier(keys=['gr', 'ri'], include_peakmag=True)
+_multi_sig = [{'gr': float(_rng_dense.normal(1.0, 0.3)), 'ri': float(_rng_dense.normal(0.5, 0.2)),
+              'peakmag': float(_rng_dense.normal(22.0, 1.0))} for _ in range(500)]
+_multi_bg = [{'gr': float(_rng_dense.normal(1.2, 0.3)), 'ri': float(_rng_dense.normal(0.6, 0.2)),
+             'peakmag': float(_rng_dense.normal(22.0, 1.0))} for _ in range(500)]
+_clf_multi.fit(_multi_sig, _multi_bg, np.full(500, 1e-5), np.full(500, 1e-5))
+_mixed_batch = [{'gr': 1.0, 'ri': 0.5, 'peakmag': 22.0}, {'gr': 1.0, 'peakmag': 22.0}]
+_mixed_result = _clf_multi.probability(_mixed_batch)
+check('a batch with two distinct finite-column patterns does not crash and is finite',
+      len(_mixed_result) == 2 and np.all(np.isfinite(_mixed_result)), str(_mixed_result))
+
+# TrajectoryClassifier inherits the blend via inheritance, no extra code.
+# Every one of TrajectoryClassifier's ~30 default feature columns (25
+# TRAJECTORY_COLOUR_KEYS + 5 TRAJECTORY_MAGNITUDE_KEYS) gets a value for
+# every event below -- an all-NaN column crashes
+# HistGradientBoostingClassifier's binning step (sklearn's sliding-window
+# bin-edge computation can't run on a column with zero finite entries), so
+# this must not leave any column entirely NaN across the whole population.
+from cmsne.trajectory import TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS
+
+
+def _tc_event(colour_val, mag_val):
+    e = {k: colour_val for k in TRAJECTORY_COLOUR_KEYS}
+    e.update({k: mag_val for k in TRAJECTORY_MAGNITUDE_KEYS})
+    return e
+
+
+_tc_key = TRAJECTORY_COLOUR_KEYS[0]
+_tc_mag_key = TRAJECTORY_MAGNITUDE_KEYS[0]
+_tc_sig_bulk = [_tc_event(float(_rng_sparse.normal(1.0, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
+               for _ in range(_n_sparse)]
+_tc_sig_corner = [_tc_event(float(_rng_sparse.normal(4.0, 0.1)), float(_rng_sparse.normal(16.0, 0.1)))
+                  for _ in range(3)]
+_tc_sig = _tc_sig_bulk + _tc_sig_corner
+_tc_bg = [_tc_event(float(_rng_sparse.normal(1.2, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
+         for _ in range(_n_sparse)]
+_tc = TrajectoryClassifier()
+_tc.fit(_tc_sig, _tc_bg, np.full(len(_tc_sig), 1e-5), np.full(_n_sparse, 1e-5))
+_tc_corner_pt = [_tc_event(4.0, 16.0)]
+_tc_corner_blended = _tc.probability(_tc_corner_pt)[0]
+_tc_corner_tree_only = np.clip(_tc.score(_tc_corner_pt), 1e-12, 1 - 1e-12)[0]
+check('TrajectoryClassifier inherits the sparse-corner blend with no extra code',
+      _tc_corner_blended > _tc_corner_tree_only + 0.05,
+      (_tc_corner_blended, _tc_corner_tree_only))
+
+
+print('\n=== local density-ratio blend: backward compatibility and kde_max_events ===')
+
+# Production-shaped: wide dynamic range of rate weights (spanning several
+# orders of magnitude, like real rate_weight() output), no sparse corners --
+# the blend must leave probability() unchanged here.
+_rng_bc = np.random.default_rng(5)
+_n_bc = 2000
+_bc_sig = [{'gr': float(_rng_bc.normal(1.0, 0.3)), 'peakmag': float(_rng_bc.normal(22.0, 1.0))}
+          for _ in range(_n_bc)]
+_bc_bg = [{'gr': float(_rng_bc.normal(1.2, 0.3)), 'peakmag': float(_rng_bc.normal(22.0, 1.0))}
+         for _ in range(_n_bc)]
+# Realistic order-of-magnitude spread, same distribution for both classes so
+# neither is artificially starved -- this is specifically testing "dense and
+# well-sampled", not sparsity.
+_bc_sw = 10.0 ** _rng_bc.uniform(-7, -5, _n_bc)
+_bc_bw = 10.0 ** _rng_bc.uniform(-7, -5, _n_bc)
+_clf_bc = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_bc.fit(_bc_sig, _bc_bg, _bc_sw, _bc_bw)
+_bc_pts = [{'gr': 1.0, 'peakmag': 22.0}, {'gr': 1.1, 'peakmag': 21.5}, {'gr': 0.9, 'peakmag': 22.5}]
+_bc_blended = _clf_bc.probability(_bc_pts)
+_bc_tree_only = np.clip(_clf_bc.score(_bc_pts), 1e-12, 1 - 1e-12)
+check('production-shaped dense region: blended probability() unchanged from tree-only score()',
+      np.allclose(_bc_blended, _bc_tree_only, atol=1e-3), (_bc_blended, _bc_tree_only))
+
+# kde_max_events caps the stored KDE training set.
+_rng_cap = np.random.default_rng(6)
+_n_cap = 500
+_cap_events = [{'gr': float(_rng_cap.normal(0, 1))} for _ in range(_n_cap)]
+_cap_weights = np.abs(_rng_cap.normal(1e-6, 1e-7, _n_cap))
+_clf_cap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=50)
+_clf_cap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
+check('kde_max_events caps the stored KDE signal set to at most the cap',
+      _clf_cap._kde_Xs.shape[0] <= 50, _clf_cap._kde_Xs.shape[0])
+check('kde_max_events preserves total rate mass after subsampling (within 1%)',
+      abs(_clf_cap._kde_ws.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
+      (_clf_cap._kde_ws.sum(), _cap_weights.sum()))
+
+# Below the cap: no subsampling, nothing changes.
+_clf_nocap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=10000)
+_clf_nocap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
+check('kde_max_events above the actual event count leaves the stored set untouched',
+      _clf_nocap._kde_Xs.shape[0] == np.sum(_cap_weights > 0), _clf_nocap._kde_Xs.shape[0])
+
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
