@@ -1016,6 +1016,43 @@ _dens_out = isamp._proposal_density(_prop_box, np.array([0.9]), np.array([40.0])
 check('_proposal_density is positive inside a box fallback and zero outside',
       _dens_in[0] > 0.0 and _dens_out[0] == 0.0, (_dens_in[0], _dens_out[0]))
 
+# _proposal_density: KDE branch gives finite, non-negative densities (lensed and unlensed)
+_dens_kde = isamp._proposal_density(_prop_kde, np.array([0.2, 0.25]), np.array([7.0, 8.0]), lensed=True)
+check('_proposal_density returns finite non-negative values for a lensed KDE',
+      np.all(np.isfinite(_dens_kde)) and np.all(_dens_kde >= 0), str(_dens_kde))
+_dens_kde_u = isamp._proposal_density(_prop_unlensed, np.array([0.2, 0.25]), np.ones(2), lensed=False)
+check('_proposal_density returns finite non-negative values for an unlensed KDE',
+      np.all(np.isfinite(_dens_kde_u)) and np.all(_dens_kde_u >= 0), str(_dens_kde_u))
+
+# regression: weighted-positive events share one z (and magnification) while zero-weight
+# events in the same cell differ -> must NOT attempt a singular KDE; falls back to a box
+_reg_events = ([{'z': 0.25, 'magnification': float(_rng_f.uniform(5, 10)), 'gr': 2.0, 'peakmag': 16.0}
+                for _ in range(5)] +
+               [{'z': float(z0), 'magnification': float(_rng_f.uniform(5, 10)), 'gr': 2.0, 'peakmag': 16.0}
+                for z0 in (0.1, 0.15, 0.2, 0.3, 0.35)])
+_reg_w = np.r_[np.ones(5), np.zeros(5)]
+_reg_ok, _reg_prop = True, None
+try:
+    _reg_prop = isamp.fit_boost_proposal(_reg_events, _reg_w, 'gr', 'peakmag',
+                                         (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                         z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+except Exception as _e:
+    _reg_ok = False
+check('fit_boost_proposal does not crash on degenerate-positive lensed cell (zero-weight spread ignored)',
+      _reg_ok and _reg_prop['kde'] is None and _reg_prop['fallback'] == 'box', _reg_prop)
+_reg_events_u = [{'z': 0.25, 'magnification': 1.0, 'gr': 2.0, 'peakmag': 16.0} for _ in range(5)] + \
+                [{'z': float(z0), 'magnification': 1.0, 'gr': 2.0, 'peakmag': 16.0}
+                 for z0 in (0.1, 0.15, 0.2, 0.3, 0.35)]
+_reg_ok_u, _reg_prop_u = True, None
+try:
+    _reg_prop_u = isamp.fit_boost_proposal(_reg_events_u, _reg_w, 'gr', 'peakmag',
+                                           (1.5, 2.5), (15.0, 17.0), lensed=False,
+                                           z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+except Exception as _e:
+    _reg_ok_u = False
+check('fit_boost_proposal does not crash on degenerate-positive unlensed cell',
+      _reg_ok_u and _reg_prop_u['kde'] is None and _reg_prop_u['fallback'] == 'box', _reg_prop_u)
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
