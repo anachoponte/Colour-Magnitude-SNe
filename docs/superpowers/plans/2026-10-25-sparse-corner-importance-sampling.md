@@ -799,15 +799,17 @@ git commit -m "feat: wire pilot+boost importance sampling into production driver
 
 ---
 
-## Task 5: Backward-compatibility regression test against cached production data
+## Task 5: Backward-compatibility regression test against production-shaped data
 
-**Goal:** Prove `generate_with_boosting(..., pilot_frac=1.0)` reproduces today's exact per-event weight on the real, already-cached job 58563115 data (not just the toy `_FakeGen` from Task 3), closing the loop on the plan's single most important correctness property.
+**Goal:** Prove `generate_with_boosting(..., pilot_frac=1.0)` reproduces today's exact per-event weight on production-shaped data (realistic z/magnification distributions, not just the toy `_FakeGen` from Task 3), closing the loop on the plan's single most important correctness property.
+
+Note: this test uses synthetic data with realistic z/magnification ranges, not a read from the actual cached job 58563115 pickle files. That's deliberate, not a shortfall — `tests/test_cmsne.py` is an explicitly hermetic, no-external-data suite (see its own module docstring: "Needs no OpSim database"), and the real cached pickles live outside the repo in a session-specific scratchpad directory; depending on that path would make this test fail for anyone else and on CI.
 
 **Files:**
 - Test: `tests/test_cmsne.py` (same section, extended)
 
 **Acceptance Criteria:**
-- [ ] Given real cached `lensed_Ia` events (with their real stored `z`/`magnification`), computing `rate_weight(...)` directly and via `generate_with_boosting`-style reweighting at `pilot_frac=1.0` (using a trivial pass-through fake generator that just returns pre-made events) give identical weights.
+- [ ] Given production-shaped synthetic events (realistic `z`/`magnification` ranges), computing `rate_weight(...)` directly and via `generate_with_boosting`-style reweighting at `pilot_frac=1.0` (using a trivial pass-through fake generator that just returns pre-made events) give identical weights.
 - [ ] `python tests/test_cmsne.py` reports `0 failed`.
 
 **Verify:** `python tests/test_cmsne.py` → `===== N passed, 0 failed =====`
