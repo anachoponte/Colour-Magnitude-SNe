@@ -1268,6 +1268,44 @@ check('_kernel_weighted_values returns zeros for empty dims',
 check('_kernel_weighted_values returns zeros for zero training rows',
       np.all(_kernel_weighted_values(np.array([0.0]), np.zeros((0, 1)), np.zeros(0), _kw_h, _kw_dims) == 0.0))
 
+print('\n=== local density-ratio blend: density ratio and blend weight ===')
+from cmsne.classifier import _local_density_ratio, _blend_weight
+
+_ldr_h = np.array([1.0])
+_ldr_dims = np.array([0])
+# Signal clustered at x=0; background far away (20 bandwidths), contributes
+# essentially nothing to the kernel sum there.
+_ldr_Xs = np.array([[0.0], [0.1], [-0.1]])
+_ldr_ws = np.array([1e-5, 1e-5, 1e-5])
+_ldr_Xb = np.array([[20.0], [21.0], [19.0]])
+_ldr_wb = np.array([1e-5, 1e-5, 1e-5])
+_p_kde, _ess_s, _ess_b = _local_density_ratio(
+    np.array([0.0]), _ldr_Xs, _ldr_ws, _ldr_Xb, _ldr_wb, _ldr_h, _ldr_dims)
+check('_local_density_ratio -> 1 when signal is local and background is many bandwidths away',
+      _p_kde is not None and np.isclose(_p_kde, 1.0, atol=1e-6), _p_kde)
+check('_local_density_ratio reports near-zero local ESS for the far-away class',
+      _ess_b < 1e-6, _ess_b)
+
+# Symmetric case: swap roles.
+_p_kde2, _, _ = _local_density_ratio(
+    np.array([0.0]), _ldr_Xb, _ldr_wb, _ldr_Xs, _ldr_ws, _ldr_h, _ldr_dims)
+check('_local_density_ratio -> 0 when background is local and signal is far away',
+      _p_kde2 is not None and np.isclose(_p_kde2, 0.0, atol=1e-6), _p_kde2)
+
+# Degenerate case: both classes far from x.
+_p_kde3, _, _ = _local_density_ratio(
+    np.array([1000.0]), _ldr_Xs, _ldr_ws, _ldr_Xb, _ldr_wb, _ldr_h, _ldr_dims)
+check('_local_density_ratio returns None when both classes are far from x',
+      _p_kde3 is None, _p_kde3)
+
+check('_blend_weight is near 1.0 when both local ESS values are far above threshold',
+      _blend_weight(1000.0, 1000.0, ess_threshold=10.0, log_width=1.0) > 0.999)
+check('_blend_weight is near 0.0 when either local ESS value is far below threshold',
+      _blend_weight(1000.0, 0.01, ess_threshold=10.0, log_width=1.0) < 0.001)
+check('_blend_weight is driven by the MINIMUM of the two local ESS values, not their average',
+      _blend_weight(1000.0, 0.01, ess_threshold=10.0, log_width=1.0) ==
+      _blend_weight(0.01, 0.01, ess_threshold=10.0, log_width=1.0))
+
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:

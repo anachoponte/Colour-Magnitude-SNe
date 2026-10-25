@@ -116,6 +116,40 @@ def _kernel_weighted_values(x, X, weights, bandwidths, dims):
     return np.asarray(weights, dtype=float) * k
 
 
+def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims):
+    """Local weighted kernel density ratio and local ESS at point ``x``.
+
+    :param Xs, ws: signal training feature matrix and rate weights.
+    :param Xb, wb: background training feature matrix and rate weights.
+    :return: ``(p_kde, local_ess_sig, local_ess_bg)``. ``p_kde`` is ``None``
+        when both classes' kernel-weighted mass underflows to (numerically)
+        zero at ``x`` -- the degenerate case callers fall back to the
+        tree-only posterior for.
+    """
+    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+    from .importance_sampling import effective_sample_size
+
+    gs = _kernel_weighted_values(x, Xs, ws, bandwidths, dims)
+    gb = _kernel_weighted_values(x, Xb, wb, bandwidths, dims)
+    S, B = float(np.sum(gs)), float(np.sum(gb))
+    local_ess_sig = effective_sample_size(gs)
+    local_ess_bg = effective_sample_size(gb)
+    if S + B < 1e-300:
+        return None, local_ess_sig, local_ess_bg
+    return S / (S + B), local_ess_sig, local_ess_bg
+
+
+def _blend_weight(local_ess_sig, local_ess_bg, ess_threshold, log_width):
+    """Sigmoid blend weight favouring the tree posterior when both classes
+    have ample local support, and the KDE density ratio when either is thin.
+
+    :return: ``alpha`` in ``(0, 1)``; 1.0 means "fully trust the tree".
+    """
+    m = min(local_ess_sig, local_ess_bg)
+    z = (np.log(m + 1e-12) - np.log(ess_threshold)) / log_width
+    return float(1.0 / (1.0 + np.exp(-z)))
+
+
 class ColourClassifier:
     """Gradient-boosted colour classifier with a contamination-pinned threshold.
 
