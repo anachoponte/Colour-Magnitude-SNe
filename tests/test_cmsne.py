@@ -1053,6 +1053,26 @@ except Exception as _e:
 check('fit_boost_proposal does not crash on degenerate-positive unlensed cell',
       _reg_ok_u and _reg_prop_u['kde'] is None and _reg_prop_u['fallback'] == 'box', _reg_prop_u)
 
+# fit_boost_proposal: enough points for a KDE, but the weighted-positive z values
+# cluster right against the lower edge of z_range with enough spread that the
+# KDE's own bandwidth smooths real density below z_range[0] -- sample_latent
+# would clip those draws back onto the boundary while _proposal_density (pre-fix)
+# kept evaluating the unclipped KDE, so the declared and actual sampling
+# distributions would disagree. The guard must reject this KDE and fall back to
+# the (self-consistent) padded box, tagged 'box_out_of_range' -- not silently
+# accept it (fallback is None) and not confuse it with the too-few-points 'box'.
+_rng_oob = np.random.default_rng(42)
+_n_oob = 20
+_z_oob = np.clip(_rng_oob.normal(0.02, 0.05, _n_oob), 0.0, None)   # test setup only: events
+_mu_oob = _rng_oob.uniform(5.0, 10.0, _n_oob)                      # themselves stay physical (>=0)
+_events_oob = [{'z': float(_z_oob[i]), 'magnification': float(_mu_oob[i]),
+               'gr': 2.0, 'peakmag': 16.0} for i in range(_n_oob)]
+_prop_oob = isamp.fit_boost_proposal(_events_oob, np.ones(_n_oob), 'gr', 'peakmag',
+                                     (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                     z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check("fit_boost_proposal rejects a KDE whose mass leaks past z_range's lower edge",
+      _prop_oob['kde'] is None and _prop_oob['fallback'] == 'box_out_of_range', _prop_oob)
+
 class _FakeGen:
     """Toy generator for unit-testing generate_with_boosting without the real
     sncosmo/OpSim pipeline: observed colour/peakmag are a deterministic,
@@ -1104,6 +1124,41 @@ _events_u, _info_u = isamp.generate_with_boosting(
     pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
 check('unlensed boosting keeps magnification fixed at 1.0 for every event',
       all(e['magnification'] == 1.0 for e in _events_u))
+
+# Quantitative unbiasedness stress check (what the design spec actually asked for):
+# with this (z_range, n_bins, ess_floor_fraction) combination, the pilot's sparse
+# cell sits right against z_range's lower edge (z_range=(0.0, 1.0)), so boosting
+# routinely needs the KDE-acceptance guard above to stay unbiased -- confirmed by
+# inspecting flagged_cells' 'fallback' across the trial seeds below. Reusing the
+# existing _fake/_toy_rate_weight/(pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+# pattern, compare the mean total weighted mass with boosting on against the mean
+# with boosting off (pilot_frac=1.0), same n and same seeds: an unbiased scheme
+# should make these two means agree up to Monte Carlo noise, regardless of how the
+# weight is redistributed between pilot- and boost-origin events.
+# 20 trials of n=500 takes well under a second here, so no need to shrink it.
+_n_trials_oob = 20
+_sums_boost, _sums_nb, _saw_box_out_of_range = [], [], False
+for _seed in range(_n_trials_oob):
+    np.random.seed(_seed)
+    _ev_b, _info_b2 = isamp.generate_with_boosting(
+        _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+        pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+    _sums_boost.append(sum(e['weight'] for e in _ev_b))
+    if any(c.get('fallback') == 'box_out_of_range' for c in _info_b2['flagged_cells']):
+        _saw_box_out_of_range = True
+
+    np.random.seed(_seed)
+    _ev_nb2, _ = isamp.generate_with_boosting(
+        _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight, pilot_frac=1.0)
+    _sums_nb.append(sum(e['weight'] for e in _ev_nb2))
+
+_mean_boost, _mean_nb = float(np.mean(_sums_boost)), float(np.mean(_sums_nb))
+_rel_diff = abs(_mean_boost - _mean_nb) / _mean_nb
+check('this stress scenario actually exercises the box_out_of_range guard',
+      _saw_box_out_of_range)
+check('boosted and un-boosted total weighted mass agree within 15% on average '
+      '(quantitative unbiasedness check)',
+      _rel_diff < 0.15, (_mean_boost, _mean_nb, _rel_diff))
 
 
 class _FakeGenWithDrops(_FakeGen):

@@ -16,6 +16,8 @@ from .opsim import create_sky_pointings
 
 BAND_PAIR_KEYS = [f'{a[-1]}{b[-1]}' for a, b in ADJ_COLOURS]  # ['ug', 'gr', 'ri', 'iz', 'zy']
 MIN_POINTS_FOR_KDE = 5
+MIN_IN_RANGE_FRACTION = 0.95
+KDE_RANGE_CHECK_DRAWS = 2000
 
 
 def effective_sample_size(weights):
@@ -70,6 +72,29 @@ def diagnose_sparse_cells(events, weights, band_pair_keys=BAND_PAIR_KEYS,
     return flagged
 
 
+def _kde_in_range_fraction(kde, lensed, z_range, magnification_range,
+                           n_draw=KDE_RANGE_CHECK_DRAWS):
+    """Monte-Carlo estimate of the fraction of ``kde``'s mass inside the
+    valid latent range(s), by resampling from it and checking containment.
+
+    Used to decide whether a fitted KDE is safe to use as a declared
+    importance-sampling proposal density: ``sample_latent`` clips draws from
+    the KDE to ``z_range``/``magnification_range``, so if a non-trivial
+    fraction of the KDE's own mass lies outside those bounds, the clipped
+    *sampling* distribution and the unclipped *declared* density
+    (``_proposal_density``) diverge, biasing the mixture-weight correction.
+    """
+    draws = kde.resample(n_draw)
+    if lensed:
+        z_d, mu_d = draws[0], draws[1]
+        in_range = ((z_d >= z_range[0]) & (z_d <= z_range[1]) &
+                   (mu_d >= magnification_range[0]) & (mu_d <= magnification_range[1]))
+    else:
+        z_d = draws[0]
+        in_range = (z_d >= z_range[0]) & (z_d <= z_range[1])
+    return float(np.mean(in_range))
+
+
 def fit_boost_proposal(events, weights, colour_key, magnitude_key, colour_range,
                        magnitude_range, lensed, z_range, magnification_range):
     """Fit a boost proposal over latent (z[, magnification]) for one flagged cell.
@@ -80,7 +105,13 @@ def fit_boost_proposal(events, weights, colour_key, magnitude_key, colour_range,
     :return: dict with ``'kde'`` (a fitted :class:`scipy.stats.gaussian_kde`, or
         ``None``) and, when ``'kde'`` is ``None``, a box fallback: ``'z_box'``
         (and ``'mu_box'`` if ``lensed``), plus ``'fallback'`` in
-        ``{'box', 'prior_box'}`` (``None`` when a KDE was fit).
+        ``{'box', 'box_out_of_range', 'prior_box'}`` (``None`` when a KDE was
+        fit). ``'box_out_of_range'`` marks a cell where a KDE candidate would
+        otherwise have been fit, but too much of its probability mass fell
+        outside ``z_range``/``magnification_range`` -- see
+        ``MIN_IN_RANGE_FRACTION``; these cells reuse the same padded-box
+        fallback as ``'box'`` (too few points) so that ``sample_latent`` and
+        ``_proposal_density`` stay self-consistent for them too.
     """
     weights = np.asarray(weights, dtype=float)
     colours = np.array([e.get(colour_key, np.nan) for e in events], dtype=float)
@@ -97,7 +128,16 @@ def fit_boost_proposal(events, weights, colour_key, magnitude_key, colour_range,
     if lensed:
         mu = np.array([events[i]['magnification'] for i in idx], dtype=float)
         if enough_z and len(np.unique(mu[pos])) > 1:
-            return {'kde': gaussian_kde(np.vstack([z, mu]), weights=w), 'fallback': None}
+            candidate = gaussian_kde(np.vstack([z, mu]), weights=w)
+            in_range_frac = _kde_in_range_fraction(candidate, True, z_range, magnification_range)
+            if in_range_frac >= MIN_IN_RANGE_FRACTION:
+                return {'kde': candidate, 'fallback': None}
+            pad_z = max(0.01, 0.1 * (z.max() - z.min()))
+            pad_mu = max(0.1, 0.1 * (mu.max() - mu.min())) if len(mu) > 1 else 1.0
+            return {'kde': None, 'fallback': 'box_out_of_range',
+                    'z_box': (max(z_range[0], z.min() - pad_z), min(z_range[1], z.max() + pad_z)),
+                    'mu_box': (max(magnification_range[0], mu.min() - pad_mu),
+                              min(magnification_range[1], mu.max() + pad_mu))}
         if len(z) > 0:
             pad_z = max(0.01, 0.1 * (z.max() - z.min()))
             pad_mu = max(0.1, 0.1 * (mu.max() - mu.min())) if len(mu) > 1 else 1.0
@@ -108,7 +148,13 @@ def fit_boost_proposal(events, weights, colour_key, magnitude_key, colour_range,
         return {'kde': None, 'fallback': 'prior_box', 'z_box': z_range, 'mu_box': magnification_range}
 
     if enough_z:
-        return {'kde': gaussian_kde(z, weights=w), 'fallback': None}
+        candidate = gaussian_kde(z, weights=w)
+        in_range_frac = _kde_in_range_fraction(candidate, False, z_range, magnification_range)
+        if in_range_frac >= MIN_IN_RANGE_FRACTION:
+            return {'kde': candidate, 'fallback': None}
+        pad_z = max(0.01, 0.1 * (z.max() - z.min()))
+        return {'kde': None, 'fallback': 'box_out_of_range',
+                'z_box': (max(z_range[0], z.min() - pad_z), min(z_range[1], z.max() + pad_z))}
     if len(z) > 0:
         pad_z = max(0.01, 0.1 * (z.max() - z.min()))
         return {'kde': None, 'fallback': 'box',
