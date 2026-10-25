@@ -17,7 +17,7 @@
     {
       "id": 9,
       "subject": "Task 3: generate_with_boosting orchestrator",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [8],
       "description": "**Goal:** Add the top-level `generate_with_boosting` function wiring pilot -> diagnose -> boost -> reweight together, with the mixture-density correction applied to pilot-origin events as well as boost-origin ones.\n\n**Files:**\n- Modify: `cmsne/importance_sampling.py`\n- Test: `tests/test_cmsne.py` (same section, extended)\n\n**Acceptance Criteria:**\n- [ ] `generate_with_boosting(gen, n, kind, z_range, abs_mag_avg, abs_mag_sig, rate_weight_fn, ...)` returns `(events, boost_info)`.\n- [ ] With `pilot_frac=1.0`, every returned event's `weight` equals `rate_weight_fn(e['z'], e['magnification'])` exactly.\n- [ ] When boosting fires, `boost_info['n_boost'] > 0`, `boost_info['flagged_cells']` non-empty, every event has a finite positive weight.\n- [ ] Unlensed boosting keeps magnification fixed at 1.0.\n- [ ] `python tests/test_cmsne.py` reports `0 failed`.\n\n**Verify:** `python tests/test_cmsne.py` -> `===== N passed, 0 failed =====`\n\nFull task text is in `docs/superpowers/plans/2026-10-25-sparse-corner-importance-sampling.md` under \"## Task 3\".\n\n```json:metadata\n{\"files\": [\"cmsne/importance_sampling.py\", \"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"pilot_frac=1.0 reproduces rate_weight_fn exactly for every event\", \"boosting fires and reports non-empty flagged_cells + n_boost > 0 in a forced-sparse scenario\", \"every returned event has a finite positive weight\", \"unlensed events keep magnification fixed at 1.0\", \"python tests/test_cmsne.py reports 0 failed\"], \"modelTier\": \"mechanical\"}\n```"
     },
@@ -36,5 +36,5 @@
       "description": "**Goal:** Prove `generate_with_boosting(..., pilot_frac=1.0)` reproduces today's exact per-event weight on production-shaped data (not just the toy `_FakeGen` from Task 3).\n\n**Files:**\n- Test: `tests/test_cmsne.py` (same section, extended)\n\n**Acceptance Criteria:**\n- [ ] Production-shaped events through a pass-through fake generator: `rate_weight(...)` directly and via `generate_with_boosting` at `pilot_frac=1.0` give identical weights.\n- [ ] `python tests/test_cmsne.py` reports `0 failed`.\n\n**Verify:** `python tests/test_cmsne.py` -> `===== N passed, 0 failed =====`\n\nFull task text is in `docs/superpowers/plans/2026-10-25-sparse-corner-importance-sampling.md` under \"## Task 5\".\n\n```json:metadata\n{\"files\": [\"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"generate_with_boosting(pilot_frac=1.0) matches bare rate_weight on production-shaped events\", \"python tests/test_cmsne.py reports 0 failed\"], \"modelTier\": \"mechanical\"}\n```"
     }
   ],
-  "lastUpdated": "2026-10-25T02:00:00Z"
+  "lastUpdated": "2026-10-25T03:00:00Z"
 }
