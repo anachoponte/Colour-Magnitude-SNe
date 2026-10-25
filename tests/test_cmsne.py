@@ -1232,6 +1232,42 @@ check('generate_with_boosting(pilot_frac=1.0) matches bare rate_weight on produc
       all(np.isclose(e['weight'], _toy_rate_weight(e['z'], e['magnification'])) for e in _events_pc) and
       len(_events_pc) == len(_prod_shaped_events) and _info_pc['n_boost'] == 0)
 
+print('\n=== local density-ratio blend: kernel/bandwidth helpers ===')
+from cmsne.classifier import _weighted_std, _scott_bandwidths, _kernel_weighted_values
+
+_ws_vals = np.array([1.0, 2.0, 3.0, 4.0, np.nan])
+_ws_wts = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
+check('_weighted_std ignores NaN and matches plain std of the finite subset',
+      np.isclose(_weighted_std(_ws_vals, _ws_wts), np.std([1.0, 2.0, 3.0, 4.0]), atol=1e-9),
+      _weighted_std(_ws_vals, _ws_wts))
+check('_weighted_std returns the safe fallback 1.0 for a degenerate (all-equal) column',
+      _weighted_std(np.array([5.0, 5.0, 5.0]), np.array([1.0, 1.0, 1.0])) == 1.0)
+check('_weighted_std returns the safe fallback 1.0 for fewer than 2 finite entries',
+      _weighted_std(np.array([5.0, np.nan]), np.array([1.0, 1.0])) == 1.0)
+
+_bw_X = np.column_stack([np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
+                         np.array([10.0, 10.0, 10.0, 10.0, 10.0])])
+_bw_w = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
+_bw = _scott_bandwidths(_bw_X, _bw_w)
+check('_scott_bandwidths returns one positive, finite bandwidth per column',
+      _bw.shape == (2,) and np.all(_bw > 0) and np.all(np.isfinite(_bw)), str(_bw))
+check('_scott_bandwidths gives the degenerate (constant) column the smaller bandwidth',
+      _bw[1] < _bw[0], str(_bw))
+
+_kw_X = np.array([[0.0], [1.0], [10.0]])
+_kw_w = np.array([1.0, 1.0, 1.0])
+_kw_h = np.array([1.0])
+_kw_dims = np.array([0])
+_kw_vals = _kernel_weighted_values(np.array([0.0]), _kw_X, _kw_w, _kw_h, _kw_dims)
+check('_kernel_weighted_values peaks at the exact-match training row',
+      _kw_vals[0] > _kw_vals[1] > _kw_vals[2], str(_kw_vals))
+check('_kernel_weighted_values matches weight*1.0 exactly at zero distance',
+      np.isclose(_kw_vals[0], 1.0), _kw_vals[0])
+check('_kernel_weighted_values returns zeros for empty dims',
+      np.all(_kernel_weighted_values(np.array([0.0]), _kw_X, _kw_w, _kw_h, np.array([], dtype=int)) == 0.0))
+check('_kernel_weighted_values returns zeros for zero training rows',
+      np.all(_kernel_weighted_values(np.array([0.0]), np.zeros((0, 1)), np.zeros(0), _kw_h, _kw_dims) == 0.0))
+
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:

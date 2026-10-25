@@ -49,6 +49,73 @@ def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEA
     return X, columns
 
 
+def _weighted_std(values, weights):
+    """Rate-weighted standard deviation of ``values``, over finite,
+    non-negative-weight entries only.
+
+    Returns ``1.0`` (a safe, finite fallback) if fewer than 2 such entries
+    exist or the weighted variance is non-positive -- this keeps downstream
+    bandwidths finite and positive rather than zero or NaN.
+    """
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    finite = np.isfinite(values) & np.isfinite(weights) & (weights >= 0)
+    if np.sum(finite) < 2 or np.sum(weights[finite]) <= 0:
+        return 1.0
+    v, w = values[finite], weights[finite]
+    mean = np.sum(v * w) / np.sum(w)
+    var = np.sum(w * (v - mean) ** 2) / np.sum(w)
+    return float(np.sqrt(var)) if var > 0 else 1.0
+
+
+def _scott_bandwidths(X, weights):
+    """Per-column Gaussian-kernel bandwidth via Scott's rule, over pooled
+    ``X``/``weights``.
+
+    :param X: ``(n, d)`` feature matrix, NaN allowed (ignored per-column by
+        :func:`_weighted_std`).
+    :param weights: ``(n,)`` rate weights, pooled across every class the
+        kernel is shared between.
+    :return: ``(d,)`` array of positive, finite bandwidths.
+    """
+    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+    from .importance_sampling import effective_sample_size
+
+    X = np.asarray(X, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    n_eff = effective_sample_size(weights)
+    d = X.shape[1]
+    scott_factor = n_eff ** (-1.0 / (d + 4)) if n_eff > 0 else 1.0
+    stds = np.array([_weighted_std(X[:, j], weights) for j in range(d)])
+    return scott_factor * stds
+
+
+def _kernel_weighted_values(x, X, weights, bandwidths, dims):
+    """Per-training-row kernel-weighted value ``w_i * k_i``, over columns
+    ``dims`` only.
+
+    :param x: ``(d,)`` query feature vector (full column set; only ``dims``
+        entries are read).
+    :param X: ``(n, d)`` training feature matrix, already filtered to rows
+        that are finite over ``dims`` -- this function does not filter rows
+        itself.
+    :param weights: ``(n,)`` training rate weights.
+    :param bandwidths: ``(d,)`` per-column bandwidths (full column set; only
+        ``dims`` entries are read).
+    :param dims: 1D int array, which columns to evaluate the kernel over.
+    :return: ``(n,)`` array, ``weights[i] * exp(-0.5 * sum_d ((x_d - X[i,d])/h_d)**2)``.
+    """
+    n = X.shape[0]
+    if len(dims) == 0 or n == 0:
+        return np.zeros(n)
+    xd = np.asarray(x, dtype=float)[dims]
+    Xd = X[:, dims]
+    hd = np.asarray(bandwidths, dtype=float)[dims]
+    z = (Xd - xd) / hd
+    k = np.exp(-0.5 * np.sum(z ** 2, axis=1))
+    return np.asarray(weights, dtype=float) * k
+
+
 class ColourClassifier:
     """Gradient-boosted colour classifier with a contamination-pinned threshold.
 
