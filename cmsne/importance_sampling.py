@@ -11,6 +11,7 @@ import numpy as np
 from scipy.stats import gaussian_kde
 
 from .config import survey_dates
+from .contours import robust_range
 from .multicolour import ADJ_COLOURS
 from .opsim import create_sky_pointings
 
@@ -41,17 +42,30 @@ def diagnose_sparse_cells(events, weights, band_pair_keys=BAND_PAIR_KEYS,
         fraction of the median non-empty-cell ESS for that band pair.
     :return: list of dicts ``{'band_pair', 'colour_range', 'magnitude_range',
         'ess', 'floor'}``, one per flagged cell.
+
+    Bin edges come from :func:`cmsne.contours.robust_range` (rate-weighted
+    1st-99th percentile), not raw min/max. A physically near-impossible event
+    with near-zero weight (e.g. near-zero redshift with near-maximal
+    magnification -- the same class of outlier ``robust_range`` already
+    guards against elsewhere) can otherwise land far outside where the real
+    density is and stretch the whole grid, so that genuinely sparse-but-
+    physically-plausible cells never get flagged while the outlier's own
+    (irrelevant, zero-ESS) cell does.
     """
     weights = np.asarray(weights, dtype=float)
     mags = np.array([e.get(magnitude_key, np.nan) for e in events], dtype=float)
+    mag_lo, mag_hi = robust_range(mags, weights)
     flagged = []
     for pair in band_pair_keys:
         colours = np.array([e.get(pair, np.nan) for e in events], dtype=float)
         finite = np.isfinite(colours) & np.isfinite(mags)
         if np.sum(finite) < 2:
             continue
-        c_edges = np.linspace(colours[finite].min(), colours[finite].max(), n_bins + 1)
-        m_edges = np.linspace(mags[finite].min(), mags[finite].max(), n_bins + 1)
+        c_lo, c_hi = robust_range(colours, weights)
+        if not np.all(np.isfinite([c_lo, c_hi, mag_lo, mag_hi])) or c_lo >= c_hi or mag_lo >= mag_hi:
+            continue
+        c_edges = np.linspace(c_lo, c_hi, n_bins + 1)
+        m_edges = np.linspace(mag_lo, mag_hi, n_bins + 1)
         cells = []
         for i in range(n_bins):
             c_hi = (colours <= c_edges[i + 1]) if i == n_bins - 1 else (colours < c_edges[i + 1])
