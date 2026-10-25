@@ -1395,6 +1395,50 @@ check('TrajectoryClassifier inherits the sparse-corner blend with no extra code'
       (_tc_corner_blended, _tc_corner_tree_only))
 
 
+print('\n=== local density-ratio blend: backward compatibility and kde_max_events ===')
+
+# Production-shaped: wide dynamic range of rate weights (spanning several
+# orders of magnitude, like real rate_weight() output), no sparse corners --
+# the blend must leave probability() unchanged here.
+_rng_bc = np.random.default_rng(5)
+_n_bc = 2000
+_bc_sig = [{'gr': float(_rng_bc.normal(1.0, 0.3)), 'peakmag': float(_rng_bc.normal(22.0, 1.0))}
+          for _ in range(_n_bc)]
+_bc_bg = [{'gr': float(_rng_bc.normal(1.2, 0.3)), 'peakmag': float(_rng_bc.normal(22.0, 1.0))}
+         for _ in range(_n_bc)]
+# Realistic order-of-magnitude spread, same distribution for both classes so
+# neither is artificially starved -- this is specifically testing "dense and
+# well-sampled", not sparsity.
+_bc_sw = 10.0 ** _rng_bc.uniform(-7, -5, _n_bc)
+_bc_bw = 10.0 ** _rng_bc.uniform(-7, -5, _n_bc)
+_clf_bc = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_bc.fit(_bc_sig, _bc_bg, _bc_sw, _bc_bw)
+_bc_pts = [{'gr': 1.0, 'peakmag': 22.0}, {'gr': 1.1, 'peakmag': 21.5}, {'gr': 0.9, 'peakmag': 22.5}]
+_bc_blended = _clf_bc.probability(_bc_pts)
+_bc_tree_only = np.clip(_clf_bc.score(_bc_pts), 1e-12, 1 - 1e-12)
+check('production-shaped dense region: blended probability() unchanged from tree-only score()',
+      np.allclose(_bc_blended, _bc_tree_only, atol=1e-3), (_bc_blended, _bc_tree_only))
+
+# kde_max_events caps the stored KDE training set.
+_rng_cap = np.random.default_rng(6)
+_n_cap = 500
+_cap_events = [{'gr': float(_rng_cap.normal(0, 1))} for _ in range(_n_cap)]
+_cap_weights = np.abs(_rng_cap.normal(1e-6, 1e-7, _n_cap))
+_clf_cap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=50)
+_clf_cap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
+check('kde_max_events caps the stored KDE signal set to at most the cap',
+      _clf_cap._kde_Xs.shape[0] <= 50, _clf_cap._kde_Xs.shape[0])
+check('kde_max_events preserves total rate mass after subsampling (within 1%)',
+      abs(_clf_cap._kde_ws.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
+      (_clf_cap._kde_ws.sum(), _cap_weights.sum()))
+
+# Below the cap: no subsampling, nothing changes.
+_clf_nocap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=10000)
+_clf_nocap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
+check('kde_max_events above the actual event count leaves the stored set untouched',
+      _clf_nocap._kde_Xs.shape[0] == np.sum(_cap_weights > 0), _clf_nocap._kde_Xs.shape[0])
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
