@@ -1374,20 +1374,33 @@ check('a batch with two distinct finite-column patterns does not crash and is fi
       len(_mixed_result) == 2 and np.all(np.isfinite(_mixed_result)), str(_mixed_result))
 
 # TrajectoryClassifier inherits the blend via inheritance, no extra code.
-from cmsne.trajectory import TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS, _step_suffix, TRAJECTORY_GRID
-_tc_suffix0 = _step_suffix(TRAJECTORY_GRID[0])
+# Every one of TrajectoryClassifier's ~30 default feature columns (25
+# TRAJECTORY_COLOUR_KEYS + 5 TRAJECTORY_MAGNITUDE_KEYS) gets a value for
+# every event below -- an all-NaN column crashes
+# HistGradientBoostingClassifier's binning step (sklearn's sliding-window
+# bin-edge computation can't run on a column with zero finite entries), so
+# this must not leave any column entirely NaN across the whole population.
+from cmsne.trajectory import TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS
+
+
+def _tc_event(colour_val, mag_val):
+    e = {k: colour_val for k in TRAJECTORY_COLOUR_KEYS}
+    e.update({k: mag_val for k in TRAJECTORY_MAGNITUDE_KEYS})
+    return e
+
+
 _tc_key = TRAJECTORY_COLOUR_KEYS[0]
 _tc_mag_key = TRAJECTORY_MAGNITUDE_KEYS[0]
-_tc_sig_bulk = [{_tc_key: float(_rng_sparse.normal(1.0, 0.3)), _tc_mag_key: float(_rng_sparse.normal(22.0, 1.0))}
+_tc_sig_bulk = [_tc_event(float(_rng_sparse.normal(1.0, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
                for _ in range(_n_sparse)]
-_tc_sig_corner = [{_tc_key: float(_rng_sparse.normal(4.0, 0.1)), _tc_mag_key: float(_rng_sparse.normal(16.0, 0.1))}
+_tc_sig_corner = [_tc_event(float(_rng_sparse.normal(4.0, 0.1)), float(_rng_sparse.normal(16.0, 0.1)))
                   for _ in range(3)]
 _tc_sig = _tc_sig_bulk + _tc_sig_corner
-_tc_bg = [{_tc_key: float(_rng_sparse.normal(1.2, 0.3)), _tc_mag_key: float(_rng_sparse.normal(22.0, 1.0))}
+_tc_bg = [_tc_event(float(_rng_sparse.normal(1.2, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
          for _ in range(_n_sparse)]
 _tc = TrajectoryClassifier()
 _tc.fit(_tc_sig, _tc_bg, np.full(len(_tc_sig), 1e-5), np.full(_n_sparse, 1e-5))
-_tc_corner_pt = [{_tc_key: 4.0, _tc_mag_key: 16.0}]
+_tc_corner_pt = [_tc_event(4.0, 16.0)]
 _tc_corner_blended = _tc.probability(_tc_corner_pt)[0]
 _tc_corner_tree_only = np.clip(_tc.score(_tc_corner_pt), 1e-12, 1 - 1e-12)[0]
 check('TrajectoryClassifier inherits the sparse-corner blend with no extra code',
