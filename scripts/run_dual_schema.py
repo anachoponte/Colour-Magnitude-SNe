@@ -29,6 +29,7 @@ from cmsne.lsst import contaminant_info
 from cmsne.supernovae import redshift_limits
 from cmsne.trajectory import DualSchemaGenerator
 from cmsne.multicolour import rate_weight
+from cmsne.importance_sampling import generate_with_boosting
 
 # Class table: (name, sncosmo source, 'lensed'/'unlensed', rate-kind, abs_mag, sigma)
 # Identical to scripts/run_multicolour.py's and scripts/run_trajectory.py's
@@ -52,15 +53,17 @@ def _git_commit():
         return 'unknown'
 
 
-def run_class(cls, n, seed):
+def run_class(cls, n, seed, pilot_frac=0.85):
     np.random.seed(seed)
     z_range = redshift_limits(cls['source'], 'lsstr', 'lsstr')
     gen = DualSchemaGenerator(cls['source'])
-    pop = gen.generate_many(n, cls['kind'], z_range, cls['am'], cls['sd'])
+    pop, boost_info = generate_with_boosting(
+        gen, n, cls['kind'], z_range, cls['am'], cls['sd'],
+        rate_weight_fn=lambda z, mu: rate_weight(cls['rate'], z, mu, source=cls['source']),
+        pilot_frac=pilot_frac)
     for e in pop:
-        e['weight'] = float(rate_weight(cls['rate'], e['z'], e['magnification'], source=cls['source']))
         e['class'] = cls['name']
-    return pop, z_range
+    return pop, z_range, boost_info
 
 
 def main():
@@ -69,6 +72,7 @@ def main():
     ap.add_argument('--class-index', type=int, default=None, help='run one class (array mode)')
     ap.add_argument('--out', default=None)
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--no-boost', action='store_true', help='disable sparse-corner boosting (pilot_frac=1.0)')
     args = ap.parse_args()
 
     which = [args.class_index] if args.class_index is not None else list(range(len(CLASSES)))
@@ -90,13 +94,15 @@ def main():
         t0 = time.time()
         print(f'[{i}] {cls["name"]} ...', flush=True)
         try:
-            pop, zr = run_class(cls, args.n, args.seed + i)
+            pop, zr, boost_info = run_class(cls, args.n, args.seed + i,
+                                            pilot_frac=1.0 if args.no_boost else 0.85)
         except Exception as e:
             print(f'  FAILED {cls["name"]}: {e!r}', flush=True)
             continue
         with open(os.path.join(out, f'{cls["name"]}.pkl'), 'wb') as f:
             pickle.dump({'class': cls['name'], 'rate': cls['rate'], 'z_range': zr,
-                         'n_attempted': args.n, 'events': pop}, f, protocol=pickle.HIGHEST_PROTOCOL)
+                         'n_attempted': args.n, 'events': pop, 'boost_info': boost_info},
+                        f, protocol=pickle.HIGHEST_PROTOCOL)
         row = {'class': cls['name'], 'kept': len(pop), 'n_attempted': args.n,
                'minutes': round((time.time() - t0) / 60, 2)}
         json.dump(row, open(os.path.join(out, f'{cls["name"]}.summary.json'), 'w'), indent=2)

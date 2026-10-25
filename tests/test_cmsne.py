@@ -925,6 +925,302 @@ check('DualSchemaGenerator inherits MultiColourGenerator API',
 check('DualSchemaGenerator._event_features uses the dual schema',
       set(_dg._event_features(_lcd, 15.0, 5.0)) >= {'gr', 'peakmag', 'gr_d0', 'peakmag_d60'})
 
+print('\n=== importance_sampling: effective sample size + sparse-cell diagnosis ===')
+from cmsne import importance_sampling as isamp
+
+check('ESS of uniform weights equals N',
+      np.isclose(isamp.effective_sample_size(np.ones(50)), 50.0))
+check('ESS of one dominant weight collapses toward 1',
+      isamp.effective_sample_size(np.array([100.0, 0.01, 0.01, 0.01])) < 1.1)
+check('ESS of empty/all-zero weights is 0.0',
+      isamp.effective_sample_size(np.array([])) == 0.0 and
+      isamp.effective_sample_size(np.zeros(5)) == 0.0)
+
+# 4x4 grid over gr in [0,4], peakmag in [20,24]: fill every cell densely except one.
+_rng_d = np.random.default_rng(0)
+_dense_events, _dense_w = [], []
+for _i in range(4):
+    for _j in range(4):
+        n_pts = 2 if (_i, _j) == (3, 3) else 30   # (3,3) is the deliberately sparse cell
+        for _ in range(n_pts):
+            _dense_events.append({'gr': _i + float(_rng_d.uniform(0, 1)),
+                                  'peakmag': 20 + _j + float(_rng_d.uniform(0, 1))})
+            _dense_w.append(1.0)
+_dense_w = np.array(_dense_w)
+# include a point exactly at the max of each axis, to check the inclusive top bin
+_dense_events.append({'gr': 4.0, 'peakmag': 24.0})
+_dense_w = np.r_[_dense_w, 1.0]
+
+_flagged = isamp.diagnose_sparse_cells(_dense_events, _dense_w, band_pair_keys=['gr'],
+                                       magnitude_key='peakmag', n_bins=4, ess_floor_fraction=0.2)
+check('diagnose_sparse_cells flags the deliberately sparse cell',
+      any(np.isclose(f['colour_range'][0], 3.0, atol=0.05) and np.isclose(f['magnitude_range'][0], 23.0, atol=0.05)
+          for f in _flagged), _flagged)
+check('diagnose_sparse_cells does not flag the densely-filled cells',
+      not any(np.isclose(f['colour_range'][0], 0.0, atol=0.05) and np.isclose(f['magnitude_range'][0], 20.0, atol=0.05)
+              for f in _flagged), _flagged)
+check('every flagged cell reports its ESS below its floor',
+      all(f['ess'] < f['floor'] for f in _flagged), _flagged)
+
+# fit_boost_proposal: enough points -> KDE (lensed, 2D)
+_rng_f = np.random.default_rng(1)
+_cell_events_lensed = [{'z': float(_rng_f.uniform(0.1, 0.3)), 'magnification': float(_rng_f.uniform(5, 10)),
+                       'gr': 2.0, 'peakmag': 16.0} for _ in range(10)]
+_cell_w = np.ones(10)
+_prop_kde = isamp.fit_boost_proposal(_cell_events_lensed, _cell_w, 'gr', 'peakmag',
+                                     (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                     z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal fits a KDE when enough points exist',
+      _prop_kde['kde'] is not None and _prop_kde['fallback'] is None)
+
+# fit_boost_proposal: too few points -> box fallback
+_cell_events_few = [{'z': 0.2, 'magnification': 8.0, 'gr': 2.0, 'peakmag': 16.0}]
+_prop_box = isamp.fit_boost_proposal(_cell_events_few, np.ones(1), 'gr', 'peakmag',
+                                     (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                     z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal falls back to a box with too few points',
+      _prop_box['kde'] is None and _prop_box['fallback'] == 'box' and
+      _prop_box['z_box'][0] <= 0.2 <= _prop_box['z_box'][1])
+
+# fit_boost_proposal: zero points -> prior_box fallback spans the full ranges given
+_prop_prior = isamp.fit_boost_proposal([], np.array([]), 'gr', 'peakmag',
+                                       (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                       z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal falls back to the full prior range with zero points',
+      _prop_prior['fallback'] == 'prior_box' and _prop_prior['z_box'] == (0.0, 1.0) and
+      _prop_prior['mu_box'] == (2.0, 50.0))
+
+# unlensed: 1D KDE over z only (magnification fixed at 1.0)
+_cell_events_unlensed = [{'z': float(_rng_f.uniform(0.1, 0.3)), 'magnification': 1.0,
+                         'gr': 2.0, 'peakmag': 16.0} for _ in range(10)]
+_prop_unlensed = isamp.fit_boost_proposal(_cell_events_unlensed, np.ones(10), 'gr', 'peakmag',
+                                          (1.5, 2.5), (15.0, 17.0), lensed=False,
+                                          z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal fits a 1D KDE for unlensed classes (no singular-matrix crash)',
+      _prop_unlensed['kde'] is not None and 'mu_box' not in _prop_unlensed)
+
+# sample_latent: draws respect the clip bounds
+_z_s, _mu_s = isamp.sample_latent(_prop_kde, 200, lensed=True,
+                                  z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('sample_latent draws stay within z_range and magnification_range',
+      np.all(_z_s >= 0.0) and np.all(_z_s <= 1.0) and
+      np.all(_mu_s >= 2.0) and np.all(_mu_s <= 50.0), (float(_z_s.min()), float(_z_s.max())))
+_z_u, _mu_u = isamp.sample_latent(_prop_unlensed, 50, lensed=False,
+                                  z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('sample_latent returns magnification=1.0 for unlensed draws',
+      np.all(_mu_u == 1.0))
+
+# _proposal_density: box fallback is zero outside its bounds, positive inside
+_dens_in = isamp._proposal_density(_prop_box, np.array([0.2]), np.array([8.0]), lensed=True)
+_dens_out = isamp._proposal_density(_prop_box, np.array([0.9]), np.array([40.0]), lensed=True)
+check('_proposal_density is positive inside a box fallback and zero outside',
+      _dens_in[0] > 0.0 and _dens_out[0] == 0.0, (_dens_in[0], _dens_out[0]))
+
+# _proposal_density: KDE branch gives finite, non-negative densities (lensed and unlensed)
+_dens_kde = isamp._proposal_density(_prop_kde, np.array([0.2, 0.25]), np.array([7.0, 8.0]), lensed=True)
+check('_proposal_density returns finite non-negative values for a lensed KDE',
+      np.all(np.isfinite(_dens_kde)) and np.all(_dens_kde >= 0), str(_dens_kde))
+_dens_kde_u = isamp._proposal_density(_prop_unlensed, np.array([0.2, 0.25]), np.ones(2), lensed=False)
+check('_proposal_density returns finite non-negative values for an unlensed KDE',
+      np.all(np.isfinite(_dens_kde_u)) and np.all(_dens_kde_u >= 0), str(_dens_kde_u))
+
+# regression: weighted-positive events share one z (and magnification) while zero-weight
+# events in the same cell differ -> must NOT attempt a singular KDE; falls back to a box
+_reg_events = ([{'z': 0.25, 'magnification': float(_rng_f.uniform(5, 10)), 'gr': 2.0, 'peakmag': 16.0}
+                for _ in range(5)] +
+               [{'z': float(z0), 'magnification': float(_rng_f.uniform(5, 10)), 'gr': 2.0, 'peakmag': 16.0}
+                for z0 in (0.1, 0.15, 0.2, 0.3, 0.35)])
+_reg_w = np.r_[np.ones(5), np.zeros(5)]
+_reg_ok, _reg_prop = True, None
+try:
+    _reg_prop = isamp.fit_boost_proposal(_reg_events, _reg_w, 'gr', 'peakmag',
+                                         (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                         z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+except Exception as _e:
+    _reg_ok = False
+check('fit_boost_proposal does not crash on degenerate-positive lensed cell (zero-weight spread ignored)',
+      _reg_ok and _reg_prop['kde'] is None and _reg_prop['fallback'] == 'box', _reg_prop)
+_reg_events_u = [{'z': 0.25, 'magnification': 1.0, 'gr': 2.0, 'peakmag': 16.0} for _ in range(5)] + \
+                [{'z': float(z0), 'magnification': 1.0, 'gr': 2.0, 'peakmag': 16.0}
+                 for z0 in (0.1, 0.15, 0.2, 0.3, 0.35)]
+_reg_ok_u, _reg_prop_u = True, None
+try:
+    _reg_prop_u = isamp.fit_boost_proposal(_reg_events_u, _reg_w, 'gr', 'peakmag',
+                                           (1.5, 2.5), (15.0, 17.0), lensed=False,
+                                           z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+except Exception as _e:
+    _reg_ok_u = False
+check('fit_boost_proposal does not crash on degenerate-positive unlensed cell',
+      _reg_ok_u and _reg_prop_u['kde'] is None and _reg_prop_u['fallback'] == 'box', _reg_prop_u)
+
+# fit_boost_proposal: enough points for a KDE, but the weighted-positive z values
+# cluster right against the lower edge of z_range with enough spread that the
+# KDE's own bandwidth smooths real density below z_range[0] -- sample_latent
+# would clip those draws back onto the boundary while _proposal_density (pre-fix)
+# kept evaluating the unclipped KDE, so the declared and actual sampling
+# distributions would disagree. The guard must reject this KDE and fall back to
+# the (self-consistent) padded box, tagged 'box_out_of_range' -- not silently
+# accept it (fallback is None) and not confuse it with the too-few-points 'box'.
+_rng_oob = np.random.default_rng(42)
+_n_oob = 20
+_z_oob = np.clip(_rng_oob.normal(0.02, 0.05, _n_oob), 0.0, None)   # test setup only: events
+_mu_oob = _rng_oob.uniform(5.0, 10.0, _n_oob)                      # themselves stay physical (>=0)
+_events_oob = [{'z': float(_z_oob[i]), 'magnification': float(_mu_oob[i]),
+               'gr': 2.0, 'peakmag': 16.0} for i in range(_n_oob)]
+_prop_oob = isamp.fit_boost_proposal(_events_oob, np.ones(_n_oob), 'gr', 'peakmag',
+                                     (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                     z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check("fit_boost_proposal rejects a KDE whose mass leaks past z_range's lower edge",
+      _prop_oob['kde'] is None and _prop_oob['fallback'] == 'box_out_of_range', _prop_oob)
+
+class _FakeGen:
+    """Toy generator for unit-testing generate_with_boosting without the real
+    sncosmo/OpSim pipeline: observed colour/peakmag are a deterministic,
+    known function of latent (z, magnification)."""
+    @staticmethod
+    def _to_event(z, mu):
+        return {'z': float(z), 'magnification': float(mu),
+                'gr': float(2.0 - z + 0.02 * mu), 'peakmag': float(20.0 + 5 * z - 0.1 * mu)}
+
+    def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
+                      magnification_range=(2.0, 50.0), mjd_range=None, mjd_high=None):
+        out = []
+        for _ in range(n):
+            z = np.random.uniform(*z_range)
+            mu = np.random.uniform(*magnification_range) if kind == 'lensed' else 1.0
+            out.append(self._to_event(z, mu))
+        return out
+
+    def generate_one(self, z, abs_mag, magnification, times, ra, dec, mjd_high=None):
+        return self._to_event(z, magnification)
+
+
+def _toy_rate_weight(z, mu):
+    return float(np.exp(-z) / mu ** 2)
+
+
+np.random.seed(0)
+_fake = _FakeGen()
+_events_nb, _info_nb = isamp.generate_with_boosting(
+    _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight, pilot_frac=1.0)
+check('pilot_frac=1.0 reproduces bare rate_weight_fn exactly (backward compatibility)',
+      all(np.isclose(e['weight'], _toy_rate_weight(e['z'], e['magnification'])) for e in _events_nb) and
+      _info_nb['n_boost'] == 0, len(_events_nb))
+
+np.random.seed(0)
+_events_b, _info_b = isamp.generate_with_boosting(
+    _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+    pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)   # high floor forces some cell to be flagged
+check('boosting fires and reports flagged cells + boost draws',
+      _info_b['n_boost'] > 0 and len(_info_b['flagged_cells']) > 0, _info_b['n_boost'])
+check('every event (pilot- and boost-origin) has a finite, positive weight after boosting',
+      all(np.isfinite(e['weight']) and e['weight'] > 0 for e in _events_b), len(_events_b))
+check('boosting returns at least as many events as the pilot alone',
+      len(_events_b) >= _info_b['n_pilot'], (len(_events_b), _info_b['n_pilot']))
+
+np.random.seed(0)
+_events_u, _info_u = isamp.generate_with_boosting(
+    _fake, 300, 'unlensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+    pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+check('unlensed boosting keeps magnification fixed at 1.0 for every event',
+      all(e['magnification'] == 1.0 for e in _events_u))
+
+# Quantitative unbiasedness stress check (what the design spec actually asked for):
+# with this (z_range, n_bins, ess_floor_fraction) combination, the pilot's sparse
+# cell sits right against z_range's lower edge (z_range=(0.0, 1.0)), so boosting
+# routinely needs the KDE-acceptance guard above to stay unbiased -- confirmed by
+# inspecting flagged_cells' 'fallback' across the trial seeds below. Reusing the
+# existing _fake/_toy_rate_weight/(pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+# pattern, compare the mean total weighted mass with boosting on against the mean
+# with boosting off (pilot_frac=1.0), same n and same seeds: an unbiased scheme
+# should make these two means agree up to Monte Carlo noise, regardless of how the
+# weight is redistributed between pilot- and boost-origin events.
+# 20 trials of n=500 takes well under a second here, so no need to shrink it.
+_n_trials_oob = 20
+_sums_boost, _sums_nb, _saw_box_out_of_range = [], [], False
+for _seed in range(_n_trials_oob):
+    np.random.seed(_seed)
+    _ev_b, _info_b2 = isamp.generate_with_boosting(
+        _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+        pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+    _sums_boost.append(sum(e['weight'] for e in _ev_b))
+    if any(c.get('fallback') == 'box_out_of_range' for c in _info_b2['flagged_cells']):
+        _saw_box_out_of_range = True
+
+    np.random.seed(_seed)
+    _ev_nb2, _ = isamp.generate_with_boosting(
+        _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight, pilot_frac=1.0)
+    _sums_nb.append(sum(e['weight'] for e in _ev_nb2))
+
+_mean_boost, _mean_nb = float(np.mean(_sums_boost)), float(np.mean(_sums_nb))
+_rel_diff = abs(_mean_boost - _mean_nb) / _mean_nb
+check('this stress scenario actually exercises the box_out_of_range guard',
+      _saw_box_out_of_range)
+check('boosted and un-boosted total weighted mass agree within 15% on average '
+      '(quantitative unbiasedness check)',
+      _rel_diff < 0.15, (_mean_boost, _mean_nb, _rel_diff))
+
+
+class _FakeGenWithDrops(_FakeGen):
+    """Like _FakeGen, but generate_one returns None on every 3rd call, to
+    exercise dropped boost draws."""
+    def __init__(self):
+        self.calls = 0
+
+    def generate_one(self, z, abs_mag, magnification, times, ra, dec, mjd_high=None):
+        self.calls += 1
+        if self.calls % 3 == 0:
+            return None
+        return self._to_event(z, magnification)
+
+
+np.random.seed(0)
+_events_d, _info_d = isamp.generate_with_boosting(
+    _FakeGenWithDrops(), 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+    pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+_attempted_total = _info_d['n_pilot'] + _info_d['n_boost']
+check('dropped boost draws are handled: function completes and population is smaller than attempted',
+      len(_events_d) < _attempted_total and len(_events_d) >= _info_d['n_pilot'],
+      (len(_events_d), _attempted_total))
+check('every event still has a finite, positive weight when boost draws are dropped',
+      all(np.isfinite(e['weight']) and e['weight'] > 0 for e in _events_d), len(_events_d))
+check('flagged-cell bookkeeping stays consistent when boost draws are dropped',
+      len(_info_d['flagged_cells']) > 0 and
+      all('fallback' in c and c['band_pair'] for c in _info_d['flagged_cells']),
+      len(_info_d['flagged_cells']))
+
+
+# Backward-compatibility against real production-shaped events (not just the toy
+# _FakeGen): a pass-through fake generator that returns pre-built events keeps
+# their original z/magnification, so generate_with_boosting(pilot_frac=1.0) must
+# reproduce rate_weight(...) exactly, the same property Task 3 checked on toy data.
+class _PassThroughGen:
+    def __init__(self, events):
+        self._events = events
+
+    def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
+                      magnification_range=(2.0, 50.0), mjd_range=None, mjd_high=None):
+        return [dict(e) for e in self._events[:n]]
+
+    def generate_one(self, z, abs_mag, magnification, times, ra, dec, mjd_high=None):
+        return {'z': float(z), 'magnification': float(magnification), 'gr': 2.0, 'peakmag': 20.0}
+
+
+_rng_pc = np.random.default_rng(2)
+_prod_shaped_events = [{'z': float(_rng_pc.uniform(0.01, 1.5)),
+                       'magnification': float(_rng_pc.uniform(2.0, 50.0)),
+                       'gr': float(_rng_pc.normal(0.5, 0.5)),
+                       'peakmag': float(_rng_pc.normal(22, 2))} for _ in range(300)]
+
+np.random.seed(3)
+_events_pc, _info_pc = isamp.generate_with_boosting(
+    _PassThroughGen(_prod_shaped_events), len(_prod_shaped_events), 'lensed',
+    (0.01, 1.5), -19.23, 0.10, _toy_rate_weight, pilot_frac=1.0)
+check('generate_with_boosting(pilot_frac=1.0) matches bare rate_weight on production-shaped events',
+      all(np.isclose(e['weight'], _toy_rate_weight(e['z'], e['magnification'])) for e in _events_pc) and
+      len(_events_pc) == len(_prod_shaped_events) and _info_pc['n_boost'] == 0)
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
