@@ -1135,6 +1135,37 @@ check('flagged-cell bookkeeping stays consistent when boost draws are dropped',
       len(_info_d['flagged_cells']))
 
 
+# Backward-compatibility against real production-shaped events (not just the toy
+# _FakeGen): a pass-through fake generator that returns pre-built events keeps
+# their original z/magnification, so generate_with_boosting(pilot_frac=1.0) must
+# reproduce rate_weight(...) exactly, the same property Task 3 checked on toy data.
+class _PassThroughGen:
+    def __init__(self, events):
+        self._events = events
+
+    def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
+                      magnification_range=(2.0, 50.0), mjd_range=None, mjd_high=None):
+        return [dict(e) for e in self._events[:n]]
+
+    def generate_one(self, z, abs_mag, magnification, times, ra, dec, mjd_high=None):
+        return {'z': float(z), 'magnification': float(magnification), 'gr': 2.0, 'peakmag': 20.0}
+
+
+_rng_pc = np.random.default_rng(2)
+_prod_shaped_events = [{'z': float(_rng_pc.uniform(0.01, 1.5)),
+                       'magnification': float(_rng_pc.uniform(2.0, 50.0)),
+                       'gr': float(_rng_pc.normal(0.5, 0.5)),
+                       'peakmag': float(_rng_pc.normal(22, 2))} for _ in range(300)]
+
+np.random.seed(3)
+_events_pc, _info_pc = isamp.generate_with_boosting(
+    _PassThroughGen(_prod_shaped_events), len(_prod_shaped_events), 'lensed',
+    (0.01, 1.5), -19.23, 0.10, _toy_rate_weight, pilot_frac=1.0)
+check('generate_with_boosting(pilot_frac=1.0) matches bare rate_weight on production-shaped events',
+      all(np.isclose(e['weight'], _toy_rate_weight(e['z'], e['magnification'])) for e in _events_pc) and
+      len(_events_pc) == len(_prod_shaped_events) and _info_pc['n_boost'] == 0)
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
