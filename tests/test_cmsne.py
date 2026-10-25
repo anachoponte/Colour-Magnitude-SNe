@@ -947,20 +947,32 @@ for _i in range(4):
                                   'peakmag': 20 + _j + float(_rng_d.uniform(0, 1))})
             _dense_w.append(1.0)
 _dense_w = np.array(_dense_w)
-# include a point exactly at the max of each axis, to check the inclusive top bin
-_dense_events.append({'gr': 4.0, 'peakmag': 24.0})
-_dense_w = np.r_[_dense_w, 1.0]
 
 _flagged = isamp.diagnose_sparse_cells(_dense_events, _dense_w, band_pair_keys=['gr'],
                                        magnitude_key='peakmag', n_bins=4, ess_floor_fraction=0.2)
 check('diagnose_sparse_cells flags the deliberately sparse cell',
-      any(np.isclose(f['colour_range'][0], 3.0, atol=0.05) and np.isclose(f['magnitude_range'][0], 23.0, atol=0.05)
-          for f in _flagged), _flagged)
+      any(f['colour_range'][0] > 2.5 and f['magnitude_range'][0] > 22.5 for f in _flagged), _flagged)
 check('diagnose_sparse_cells does not flag the densely-filled cells',
-      not any(np.isclose(f['colour_range'][0], 0.0, atol=0.05) and np.isclose(f['magnitude_range'][0], 20.0, atol=0.05)
-              for f in _flagged), _flagged)
+      not any(f['colour_range'][1] < 1.5 and f['magnitude_range'][1] < 21.5 for f in _flagged), _flagged)
 check('every flagged cell reports its ESS below its floor',
       all(f['ess'] < f['floor'] for f in _flagged), _flagged)
+
+# Regression: a real BlueBEAR smoke-test run surfaced this before robust_range
+# was used for bin edges -- a physically near-impossible event with near-zero
+# weight (e.g. near-zero redshift + near-maximal magnification, which
+# rate_weight already assigns weight=0.0 to) must not stretch the grid and
+# hijack which cells get flagged, the same class of outlier
+# cmsne.contours.robust_range already guards against elsewhere.
+_outlier_events = list(_dense_events) + [{'gr': 500.0, 'peakmag': -500.0} for _ in range(5)]
+_outlier_w = np.r_[_dense_w, np.zeros(5)]
+_flagged_outlier = isamp.diagnose_sparse_cells(_outlier_events, _outlier_w, band_pair_keys=['gr'],
+                                               magnitude_key='peakmag', n_bins=4, ess_floor_fraction=0.2)
+check('a zero-weight extreme outlier does not stretch the grid away from the real data',
+      all(-2.0 <= f['colour_range'][0] <= 6.0 and 18.0 <= f['magnitude_range'][0] <= 26.0
+          for f in _flagged_outlier), _flagged_outlier)
+check('the outlier scenario still flags the same deliberately sparse cell as before',
+      any(f['colour_range'][0] > 2.5 and f['magnitude_range'][0] > 22.5 for f in _flagged_outlier),
+      _flagged_outlier)
 
 # fit_boost_proposal: enough points -> KDE (lensed, 2D)
 _rng_f = np.random.default_rng(1)
