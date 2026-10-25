@@ -962,6 +962,60 @@ check('diagnose_sparse_cells does not flag the densely-filled cells',
 check('every flagged cell reports its ESS below its floor',
       all(f['ess'] < f['floor'] for f in _flagged), _flagged)
 
+# fit_boost_proposal: enough points -> KDE (lensed, 2D)
+_rng_f = np.random.default_rng(1)
+_cell_events_lensed = [{'z': float(_rng_f.uniform(0.1, 0.3)), 'magnification': float(_rng_f.uniform(5, 10)),
+                       'gr': 2.0, 'peakmag': 16.0} for _ in range(10)]
+_cell_w = np.ones(10)
+_prop_kde = isamp.fit_boost_proposal(_cell_events_lensed, _cell_w, 'gr', 'peakmag',
+                                     (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                     z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal fits a KDE when enough points exist',
+      _prop_kde['kde'] is not None and _prop_kde['fallback'] is None)
+
+# fit_boost_proposal: too few points -> box fallback
+_cell_events_few = [{'z': 0.2, 'magnification': 8.0, 'gr': 2.0, 'peakmag': 16.0}]
+_prop_box = isamp.fit_boost_proposal(_cell_events_few, np.ones(1), 'gr', 'peakmag',
+                                     (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                     z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal falls back to a box with too few points',
+      _prop_box['kde'] is None and _prop_box['fallback'] == 'box' and
+      _prop_box['z_box'][0] <= 0.2 <= _prop_box['z_box'][1])
+
+# fit_boost_proposal: zero points -> prior_box fallback spans the full ranges given
+_prop_prior = isamp.fit_boost_proposal([], np.array([]), 'gr', 'peakmag',
+                                       (1.5, 2.5), (15.0, 17.0), lensed=True,
+                                       z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal falls back to the full prior range with zero points',
+      _prop_prior['fallback'] == 'prior_box' and _prop_prior['z_box'] == (0.0, 1.0) and
+      _prop_prior['mu_box'] == (2.0, 50.0))
+
+# unlensed: 1D KDE over z only (magnification fixed at 1.0)
+_cell_events_unlensed = [{'z': float(_rng_f.uniform(0.1, 0.3)), 'magnification': 1.0,
+                         'gr': 2.0, 'peakmag': 16.0} for _ in range(10)]
+_prop_unlensed = isamp.fit_boost_proposal(_cell_events_unlensed, np.ones(10), 'gr', 'peakmag',
+                                          (1.5, 2.5), (15.0, 17.0), lensed=False,
+                                          z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('fit_boost_proposal fits a 1D KDE for unlensed classes (no singular-matrix crash)',
+      _prop_unlensed['kde'] is not None and 'mu_box' not in _prop_unlensed)
+
+# sample_latent: draws respect the clip bounds
+_z_s, _mu_s = isamp.sample_latent(_prop_kde, 200, lensed=True,
+                                  z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('sample_latent draws stay within z_range and magnification_range',
+      np.all(_z_s >= 0.0) and np.all(_z_s <= 1.0) and
+      np.all(_mu_s >= 2.0) and np.all(_mu_s <= 50.0), (float(_z_s.min()), float(_z_s.max())))
+_z_u, _mu_u = isamp.sample_latent(_prop_unlensed, 50, lensed=False,
+                                  z_range=(0.0, 1.0), magnification_range=(2.0, 50.0))
+check('sample_latent returns magnification=1.0 for unlensed draws',
+      np.all(_mu_u == 1.0))
+
+# _proposal_density: box fallback is zero outside its bounds, positive inside
+_dens_in = isamp._proposal_density(_prop_box, np.array([0.2]), np.array([8.0]), lensed=True)
+_dens_out = isamp._proposal_density(_prop_box, np.array([0.9]), np.array([40.0]), lensed=True)
+check('_proposal_density is positive inside a box fallback and zero outside',
+      _dens_in[0] > 0.0 and _dens_out[0] == 0.0, (_dens_in[0], _dens_out[0]))
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
