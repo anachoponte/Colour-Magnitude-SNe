@@ -35,6 +35,14 @@ COLOUR_KEYS = ['ug', 'gr', 'ri', 'iz', 'zy']
 MAGNITUDE_FEATURES = ('peakmag', 'peakmag_fit', 'peakmag_firstdet')
 DEFAULT_MAGNITUDE_FEATURE = 'peakmag'   # brightest-observed sample across all bands
 
+# Local density-ratio blend defaults (see docs/superpowers/specs/
+# 2026-10-25-local-density-posterior-blend-design.md). These are provisional
+# starting points, not empirically final -- real tuning against production
+# data is a manual-validation step, not an automated test.
+DEFAULT_ESS_THRESHOLD = 10.0
+DEFAULT_LOG_WIDTH = 0.3
+DEFAULT_KDE_MAX_EVENTS = 4000
+
 
 def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
     """Stack ``events`` (dicts) into a feature matrix over ``keys`` (+ ``extra``).
@@ -150,6 +158,40 @@ def _blend_weight(local_ess_sig, local_ess_bg, ess_threshold, log_width):
     return float(1.0 / (1.0 + np.exp(-z)))
 
 
+def _finite_pattern(x):
+    """Boolean tuple: which entries of feature vector ``x`` are finite."""
+    return tuple(bool(v) for v in np.isfinite(np.asarray(x, dtype=float)))
+
+
+def _weighted_subsample(X, weights, max_events, seed=0):
+    """Rate-weighted subsample of up to ``max_events`` positive-weight rows
+    of ``X``/``weights``, without replacement, rescaled to preserve total
+    weight mass.
+
+    Zero-weight rows are dropped unconditionally -- they contribute nothing
+    to the kernel-weighted sums this feeds and carry no rate mass to
+    preserve. Matches the weighted-subsampling convention already used
+    elsewhere in this project (``scripts/plot_evolving_boundaries.py``'s
+    ``_draw_resampled_sources``), adapted to sample *without* replacement
+    since this becomes the KDE's own reference set, where duplicate points
+    would distort local density estimates.
+
+    :return: ``(X_sub, weights_sub)``. If there are ``max_events`` or fewer
+        positive-weight rows, returns all of them (no subsampling), with
+        weights unchanged.
+    """
+    weights = np.asarray(weights, dtype=float)
+    positive = np.where(weights > 0)[0]
+    if len(positive) <= max_events:
+        return X[positive], weights[positive]
+    wsum = weights[positive].sum()
+    p = weights[positive] / wsum
+    rng = np.random.default_rng(seed)
+    chosen = rng.choice(positive, size=max_events, replace=False, p=p)
+    kept_w = weights[chosen] * (wsum / weights[chosen].sum())
+    return X[chosen], kept_w
+
+
 class ColourClassifier:
     """Gradient-boosted colour classifier with a contamination-pinned threshold.
 
@@ -172,7 +214,9 @@ class ColourClassifier:
 
     def __init__(self, keys=COLOUR_KEYS, include_peakmag=True,
                  magnitude_feature=DEFAULT_MAGNITUDE_FEATURE, target_fpr=0.10,
-                 calibrate=True, **hgb):
+                 calibrate=True, ess_threshold=DEFAULT_ESS_THRESHOLD,
+                 log_width=DEFAULT_LOG_WIDTH, kde_max_events=DEFAULT_KDE_MAX_EVENTS,
+                 **hgb):
         self.keys = list(keys)
         if include_peakmag and magnitude_feature:
             if magnitude_feature not in MAGNITUDE_FEATURES:
@@ -188,6 +232,9 @@ class ColourClassifier:
         self.params = dict(max_depth=4, learning_rate=0.1, max_iter=300,
                            l2_regularization=1.0, random_state=0)
         self.params.update(hgb)
+        self.ess_threshold = ess_threshold
+        self.log_width = log_width
+        self.kde_max_events = kde_max_events
 
     def fit(self, signal_events, background_events,
             signal_weights=None, background_weights=None):
@@ -223,7 +270,22 @@ class ColourClassifier:
 
         sb = self.clf.predict_proba(Xb)[:, 1]
         self.threshold = float(weighted_quantile(sb, wb, q=1.0 - self.target_fpr))
+        self._store_kde_training_data(Xs, ws, Xb, wb)
         return self
+
+    def _store_kde_training_data(self, Xs, ws, Xb, wb):
+        """Retain (optionally subsampled) training events/weights + bandwidths
+        for the local density-ratio blend in :meth:`probability`, and reset
+        the per-pattern cache. ``ws``/``wb`` must already be the *balanced*
+        weights computed earlier in :meth:`fit`, matching ``p_tree``'s own
+        balanced-training-prior convention.
+        """
+        self._kde_Xs, self._kde_ws = _weighted_subsample(Xs, ws, self.kde_max_events)
+        self._kde_Xb, self._kde_wb = _weighted_subsample(Xb, wb, self.kde_max_events)
+        pooled_X = np.vstack([self._kde_Xs, self._kde_Xb])
+        pooled_w = np.r_[self._kde_ws, self._kde_wb]
+        self._kde_bandwidths = _scott_bandwidths(pooled_X, pooled_w)
+        self._kde_pattern_cache = {}
 
     def score(self, events):
         """Raw ranking score (calibrated posterior at the balanced training prior).
@@ -248,7 +310,8 @@ class ColourClassifier:
             ``None`` to keep the training prior.
         :return: array of probabilities in [0, 1].
         """
-        p = np.clip(self.score(events), 1e-12, 1 - 1e-12)
+        p_tree = np.clip(self.score(events), 1e-12, 1 - 1e-12)
+        p = self._blend_with_local_density(events, p_tree)
         if prior is None:
             return p
         p0 = self.train_prior
@@ -256,6 +319,42 @@ class ColourClassifier:
         lr = (p / (1 - p)) * ((1 - p0) / p0)
         odds = lr * (prior / (1 - prior))
         return odds / (1 + odds)
+
+    def _blend_with_local_density(self, events, p_tree):
+        """Blend ``p_tree`` with the local KDE density ratio, per event,
+        weighted by local training support (see
+        docs/superpowers/specs/2026-10-25-local-density-posterior-blend-design.md).
+        Falls back to ``p_tree`` unchanged wherever the KDE side is
+        degenerate (no nearby training data of either class, or no finite
+        feature columns for that event).
+        """
+        X, _ = colour_feature_matrix(events, self.keys, self.extra)
+        out = np.array(p_tree, dtype=float, copy=True)
+        for i in range(len(events)):
+            x = X[i]
+            pattern = _finite_pattern(x)
+            dims = np.where(np.asarray(pattern))[0]
+            if len(dims) == 0:
+                continue
+            Xs_p, ws_p, Xb_p, wb_p = self._kde_subset_for_pattern(pattern, dims)
+            p_kde, ess_sig, ess_bg = _local_density_ratio(
+                x, Xs_p, ws_p, Xb_p, wb_p, self._kde_bandwidths, dims)
+            if p_kde is None:
+                continue
+            alpha = _blend_weight(ess_sig, ess_bg, self.ess_threshold, self.log_width)
+            out[i] = alpha * p_tree[i] + (1 - alpha) * p_kde
+        return out
+
+    def _kde_subset_for_pattern(self, pattern, dims):
+        """Training rows finite over ``dims``, cached per ``pattern`` on this
+        instance (reset by :meth:`fit`)."""
+        if pattern not in self._kde_pattern_cache:
+            finite_s = np.all(np.isfinite(self._kde_Xs[:, dims]), axis=1)
+            finite_b = np.all(np.isfinite(self._kde_Xb[:, dims]), axis=1)
+            self._kde_pattern_cache[pattern] = (
+                self._kde_Xs[finite_s], self._kde_ws[finite_s],
+                self._kde_Xb[finite_b], self._kde_wb[finite_b])
+        return self._kde_pattern_cache[pattern]
 
     def rank(self, events):
         """Indices of ``events`` ordered most- to least-lensed-like (by score).

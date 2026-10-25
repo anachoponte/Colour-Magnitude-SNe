@@ -1307,6 +1307,94 @@ check('_blend_weight is driven by the MINIMUM of the two local ESS values, not t
       _blend_weight(0.01, 0.01, ess_threshold=10.0, log_width=1.0))
 
 
+print('\n=== local density-ratio blend: wired into ColourClassifier ===')
+from cmsne.classifier import ColourClassifier
+from cmsne.trajectory import TrajectoryClassifier
+
+# Dense bulk: plenty of both classes everywhere in a shared box -> alpha
+# should be close to 1, blended probability() close to tree-only score().
+_rng_dense = np.random.default_rng(3)
+_n_dense = 1500
+_dense_sig = [{'gr': float(_rng_dense.normal(1.0, 0.3)), 'peakmag': float(_rng_dense.normal(22.0, 1.0))}
+             for _ in range(_n_dense)]
+_dense_bg = [{'gr': float(_rng_dense.normal(1.2, 0.3)), 'peakmag': float(_rng_dense.normal(22.0, 1.0))}
+            for _ in range(_n_dense)]
+_dense_sw = np.full(_n_dense, 1e-5)
+_dense_bw = np.full(_n_dense, 1e-5)
+_clf_dense = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_dense.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
+_dense_pts = [{'gr': 1.0, 'peakmag': 22.0}, {'gr': 1.1, 'peakmag': 21.7}]
+_dense_blended = _clf_dense.probability(_dense_pts)
+_dense_tree_only = np.clip(_clf_dense.score(_dense_pts), 1e-12, 1 - 1e-12)
+check('dense region: blended probability() matches tree-only score() closely',
+      np.allclose(_dense_blended, _dense_tree_only, atol=1e-3),
+      (_dense_blended, _dense_tree_only))
+
+# Sparse corner: background NEVER appears past gr=3.0, signal has a few rare
+# points out there -- mimics the real bright+red bug at small scale.
+_rng_sparse = np.random.default_rng(4)
+_n_sparse = 1500
+_sparse_sig_bulk = [{'gr': float(_rng_sparse.normal(1.0, 0.3)), 'peakmag': float(_rng_sparse.normal(22.0, 1.0))}
+                    for _ in range(_n_sparse)]
+_sparse_sig_corner = [{'gr': float(_rng_sparse.normal(4.0, 0.1)), 'peakmag': float(_rng_sparse.normal(16.0, 0.1))}
+                      for _ in range(3)]
+_sparse_sig = _sparse_sig_bulk + _sparse_sig_corner
+_sparse_bg = [{'gr': float(_rng_sparse.normal(1.2, 0.3)), 'peakmag': float(_rng_sparse.normal(22.0, 1.0))}
+             for _ in range(_n_sparse)]
+_sparse_sw = np.full(len(_sparse_sig), 1e-5)
+_sparse_bw = np.full(_n_sparse, 1e-5)
+_clf_sparse = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_sparse.fit(_sparse_sig, _sparse_bg, _sparse_sw, _sparse_bw)
+_corner_pt = [{'gr': 4.0, 'peakmag': 16.0}]
+_corner_blended = _clf_sparse.probability(_corner_pt)[0]
+_corner_tree_only = np.clip(_clf_sparse.score(_corner_pt), 1e-12, 1 - 1e-12)[0]
+check('sparse corner: blended probability() is materially higher than tree-only score()',
+      _corner_blended > _corner_tree_only + 0.05,
+      (_corner_blended, _corner_tree_only))
+check('sparse corner: blended probability() is clearly above the balanced-prior midpoint',
+      _corner_blended > 0.7, _corner_blended)
+
+# No finite feature columns at all -> falls back to p_tree unchanged.
+_nan_pt = [{'gr': np.nan, 'peakmag': np.nan}]
+_nan_blended = _clf_dense.probability(_nan_pt)
+_nan_tree_only = np.clip(_clf_dense.score(_nan_pt), 1e-12, 1 - 1e-12)
+check('event with no finite columns falls back to tree-only probability unchanged',
+      np.allclose(_nan_blended, _nan_tree_only))
+
+# Two distinct finite-column patterns in the same call.
+_clf_multi = ColourClassifier(keys=['gr', 'ri'], include_peakmag=True)
+_multi_sig = [{'gr': float(_rng_dense.normal(1.0, 0.3)), 'ri': float(_rng_dense.normal(0.5, 0.2)),
+              'peakmag': float(_rng_dense.normal(22.0, 1.0))} for _ in range(500)]
+_multi_bg = [{'gr': float(_rng_dense.normal(1.2, 0.3)), 'ri': float(_rng_dense.normal(0.6, 0.2)),
+             'peakmag': float(_rng_dense.normal(22.0, 1.0))} for _ in range(500)]
+_clf_multi.fit(_multi_sig, _multi_bg, np.full(500, 1e-5), np.full(500, 1e-5))
+_mixed_batch = [{'gr': 1.0, 'ri': 0.5, 'peakmag': 22.0}, {'gr': 1.0, 'peakmag': 22.0}]
+_mixed_result = _clf_multi.probability(_mixed_batch)
+check('a batch with two distinct finite-column patterns does not crash and is finite',
+      len(_mixed_result) == 2 and np.all(np.isfinite(_mixed_result)), str(_mixed_result))
+
+# TrajectoryClassifier inherits the blend via inheritance, no extra code.
+from cmsne.trajectory import TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS, _step_suffix, TRAJECTORY_GRID
+_tc_suffix0 = _step_suffix(TRAJECTORY_GRID[0])
+_tc_key = TRAJECTORY_COLOUR_KEYS[0]
+_tc_mag_key = TRAJECTORY_MAGNITUDE_KEYS[0]
+_tc_sig_bulk = [{_tc_key: float(_rng_sparse.normal(1.0, 0.3)), _tc_mag_key: float(_rng_sparse.normal(22.0, 1.0))}
+               for _ in range(_n_sparse)]
+_tc_sig_corner = [{_tc_key: float(_rng_sparse.normal(4.0, 0.1)), _tc_mag_key: float(_rng_sparse.normal(16.0, 0.1))}
+                  for _ in range(3)]
+_tc_sig = _tc_sig_bulk + _tc_sig_corner
+_tc_bg = [{_tc_key: float(_rng_sparse.normal(1.2, 0.3)), _tc_mag_key: float(_rng_sparse.normal(22.0, 1.0))}
+         for _ in range(_n_sparse)]
+_tc = TrajectoryClassifier()
+_tc.fit(_tc_sig, _tc_bg, np.full(len(_tc_sig), 1e-5), np.full(_n_sparse, 1e-5))
+_tc_corner_pt = [{_tc_key: 4.0, _tc_mag_key: 16.0}]
+_tc_corner_blended = _tc.probability(_tc_corner_pt)[0]
+_tc_corner_tree_only = np.clip(_tc.score(_tc_corner_pt), 1e-12, 1 - 1e-12)[0]
+check('TrajectoryClassifier inherits the sparse-corner blend with no extra code',
+      _tc_corner_blended > _tc_corner_tree_only + 0.05,
+      (_tc_corner_blended, _tc_corner_tree_only))
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
