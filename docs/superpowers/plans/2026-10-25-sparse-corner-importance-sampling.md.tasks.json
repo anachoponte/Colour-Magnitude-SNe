@@ -31,10 +31,10 @@
     {
       "id": 11,
       "subject": "Task 5: Backward-compat regression test on production-shaped data",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [10],
       "description": "**Goal:** Prove `generate_with_boosting(..., pilot_frac=1.0)` reproduces today's exact per-event weight on production-shaped data (not just the toy `_FakeGen` from Task 3).\n\n**Files:**\n- Test: `tests/test_cmsne.py` (same section, extended)\n\n**Acceptance Criteria:**\n- [ ] Production-shaped events through a pass-through fake generator: `rate_weight(...)` directly and via `generate_with_boosting` at `pilot_frac=1.0` give identical weights.\n- [ ] `python tests/test_cmsne.py` reports `0 failed`.\n\n**Verify:** `python tests/test_cmsne.py` -> `===== N passed, 0 failed =====`\n\nFull task text is in `docs/superpowers/plans/2026-10-25-sparse-corner-importance-sampling.md` under \"## Task 5\".\n\n```json:metadata\n{\"files\": [\"tests/test_cmsne.py\"], \"verifyCommand\": \"python tests/test_cmsne.py\", \"acceptanceCriteria\": [\"generate_with_boosting(pilot_frac=1.0) matches bare rate_weight on production-shaped events\", \"python tests/test_cmsne.py reports 0 failed\"], \"modelTier\": \"mechanical\"}\n```"
     }
   ],
-  "lastUpdated": "2026-10-25T04:00:00Z"
+  "lastUpdated": "2026-10-25T05:00:00Z"
 }
