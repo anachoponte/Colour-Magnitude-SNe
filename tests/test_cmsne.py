@@ -1053,6 +1053,59 @@ except Exception as _e:
 check('fit_boost_proposal does not crash on degenerate-positive unlensed cell',
       _reg_ok_u and _reg_prop_u['kde'] is None and _reg_prop_u['fallback'] == 'box', _reg_prop_u)
 
+class _FakeGen:
+    """Toy generator for unit-testing generate_with_boosting without the real
+    sncosmo/OpSim pipeline: observed colour/peakmag are a deterministic,
+    known function of latent (z, magnification)."""
+    @staticmethod
+    def _to_event(z, mu):
+        return {'z': float(z), 'magnification': float(mu),
+                'gr': float(2.0 - z + 0.02 * mu), 'peakmag': float(20.0 + 5 * z - 0.1 * mu)}
+
+    def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
+                      magnification_range=(2.0, 50.0), mjd_range=None, mjd_high=None):
+        out = []
+        for _ in range(n):
+            z = np.random.uniform(*z_range)
+            mu = np.random.uniform(*magnification_range) if kind == 'lensed' else 1.0
+            out.append(self._to_event(z, mu))
+        return out
+
+    def generate_one(self, z, abs_mag, magnification, times, ra, dec, mjd_high=None):
+        return self._to_event(z, magnification)
+
+
+def _toy_rate_weight(z, mu):
+    return float(np.exp(-z) / mu ** 2)
+
+
+np.random.seed(0)
+_fake = _FakeGen()
+_events_nb, _info_nb = isamp.generate_with_boosting(
+    _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight, pilot_frac=1.0)
+check('pilot_frac=1.0 reproduces bare rate_weight_fn exactly (backward compatibility)',
+      all(np.isclose(e['weight'], _toy_rate_weight(e['z'], e['magnification'])) for e in _events_nb) and
+      _info_nb['n_boost'] == 0, len(_events_nb))
+
+np.random.seed(0)
+_events_b, _info_b = isamp.generate_with_boosting(
+    _fake, 500, 'lensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+    pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)   # high floor forces some cell to be flagged
+check('boosting fires and reports flagged cells + boost draws',
+      _info_b['n_boost'] > 0 and len(_info_b['flagged_cells']) > 0, _info_b['n_boost'])
+check('every event (pilot- and boost-origin) has a finite, positive weight after boosting',
+      all(np.isfinite(e['weight']) and e['weight'] > 0 for e in _events_b), len(_events_b))
+check('boosting returns at least as many events as the pilot alone',
+      len(_events_b) >= _info_b['n_pilot'], (len(_events_b), _info_b['n_pilot']))
+
+np.random.seed(0)
+_events_u, _info_u = isamp.generate_with_boosting(
+    _fake, 300, 'unlensed', (0.0, 1.0), -19.0, 0.1, _toy_rate_weight,
+    pilot_frac=0.5, n_bins=4, ess_floor_fraction=0.9)
+check('unlensed boosting keeps magnification fixed at 1.0 for every event',
+      all(e['magnification'] == 1.0 for e in _events_u))
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)

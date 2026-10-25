@@ -156,3 +156,101 @@ def _proposal_density(proposal, z, mu, lensed):
     mu_width = mu_box[1] - mu_box[0]
     in_mu = (mu >= mu_box[0]) & (mu <= mu_box[1])
     return np.where(in_z & in_mu, 1.0 / (z_width * mu_width), 0.0)
+
+
+def generate_with_boosting(gen, n, kind, z_range, abs_mag_avg, abs_mag_sig,
+                           rate_weight_fn, magnification_range=(2.0, 50.0),
+                           mjd_range=None, mjd_high=None, pilot_frac=0.85,
+                           band_pair_keys=BAND_PAIR_KEYS, magnitude_key='peakmag',
+                           n_bins=8, ess_floor_fraction=0.05):
+    """Pilot+boost importance sampling for one class's event generation.
+
+    Draws a pilot population from the existing uniform proposal (unchanged
+    ``gen.generate_many``), diagnoses sparse (colour, magnitude) cells from the
+    pilot's own weighted ESS, fits a boost proposal over latent
+    (z[, magnification]) for each flagged cell, draws a boost population from
+    it via ``gen.generate_one``, and returns the combined population with every
+    event's weight corrected for the resulting mixture-proposal density --
+    including pilot-origin events, not only boost-origin ones. When
+    ``pilot_frac=1.0`` or nothing is flagged, every returned weight equals
+    ``rate_weight_fn(z, magnification)`` exactly, matching today's production
+    behaviour.
+
+    :param gen: a :class:`cmsne.multicolour.MultiColourGenerator`-API object
+        (``generate_many``/``generate_one``).
+    :param n: total attempted draws (pilot + boost together).
+    :param kind: ``'lensed'`` or ``'unlensed'`` (as for ``generate_many``).
+    :param rate_weight_fn: callable ``(z, magnification) -> weight``.
+    :param pilot_frac: fraction of ``n`` spent on the pilot stage.
+    :return: ``(events, boost_info)``, where ``boost_info`` has ``'n_pilot'``,
+        ``'n_boost'``, and ``'flagged_cells'`` (each flagged cell's band pair,
+        ranges, pilot ESS/floor, and which fallback tier its proposal used).
+    """
+    lensed = (kind == 'lensed')
+    if mjd_range is None:
+        mjd_range = (survey_dates[0], survey_dates[3])
+    n_pilot = n if pilot_frac >= 1.0 else int(round(n * pilot_frac))
+    n_boost = n - n_pilot
+
+    pilot = gen.generate_many(n_pilot, kind, z_range, abs_mag_avg, abs_mag_sig,
+                              magnification_range=magnification_range,
+                              mjd_range=mjd_range, mjd_high=mjd_high)
+    if not pilot or n_boost <= 0:
+        for e in pilot:
+            e['weight'] = float(rate_weight_fn(e['z'], e['magnification']))
+        return pilot, {'n_pilot': n_pilot, 'n_boost': 0, 'flagged_cells': []}
+
+    pilot_rw = np.array([rate_weight_fn(e['z'], e['magnification']) for e in pilot])
+    flagged = diagnose_sparse_cells(pilot, pilot_rw, band_pair_keys, magnitude_key,
+                                    n_bins, ess_floor_fraction)
+    if not flagged:
+        for e, w in zip(pilot, pilot_rw):
+            e['weight'] = float(w)
+        return pilot, {'n_pilot': n_pilot, 'n_boost': 0, 'flagged_cells': []}
+
+    deficits = np.array([max(cell['floor'] - cell['ess'], 1e-9) for cell in flagged])
+    shares = deficits / deficits.sum()
+    boost_counts = np.maximum(1, np.round(shares * n_boost).astype(int))
+
+    proposals, boost_events = [], []
+    for cell, n_draw in zip(flagged, boost_counts):
+        proposal = fit_boost_proposal(pilot, pilot_rw, cell['band_pair'], magnitude_key,
+                                      cell['colour_range'], cell['magnitude_range'],
+                                      lensed, z_range, magnification_range)
+        cell['fallback'] = proposal['fallback']
+        proposals.append(proposal)
+
+        z_samp, mu_samp = sample_latent(proposal, int(n_draw), lensed, z_range, magnification_range)
+        for z_i, mu_i in zip(z_samp, mu_samp):
+            abs_mag_i = np.random.normal(abs_mag_avg, abs_mag_sig)
+            times_i = np.random.uniform(*mjd_range)
+            ra, dec = create_sky_pointings(10)
+            if len(ra) == 0:
+                continue
+            r = gen.generate_one(float(z_i), abs_mag_i, float(mu_i), times_i, ra[0], dec[0], mjd_high=mjd_high)
+            if r is not None:
+                boost_events.append(r)
+
+    n_pilot_attempted = n_pilot
+    n_boost_attempted = int(boost_counts.sum())
+    total_attempted = n_pilot_attempted + n_boost_attempted
+    f_pilot = n_pilot_attempted / total_attempted
+    f_boost_per_cell = boost_counts / total_attempted
+
+    all_events = pilot + boost_events
+    all_z = np.array([e['z'] for e in all_events])
+    all_mu = np.array([e['magnification'] for e in all_events]) if lensed else np.ones(len(all_events))
+
+    p_uniform_const = 1.0 / (z_range[1] - z_range[0])
+    if lensed:
+        p_uniform_const /= (magnification_range[1] - magnification_range[0])
+
+    p_boost_total = np.zeros(len(all_events))
+    for cell_idx, proposal in enumerate(proposals):
+        p_boost_total += f_boost_per_cell[cell_idx] * _proposal_density(proposal, all_z, all_mu, lensed)
+
+    p_mix_relative = np.maximum(f_pilot + p_boost_total / p_uniform_const, 1e-12)
+    for e, z_i, mu_i, pm_rel in zip(all_events, all_z, all_mu, p_mix_relative):
+        e['weight'] = float(rate_weight_fn(z_i, mu_i) / pm_rel)
+
+    return all_events, {'n_pilot': n_pilot_attempted, 'n_boost': n_boost_attempted, 'flagged_cells': flagged}
