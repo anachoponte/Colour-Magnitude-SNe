@@ -544,10 +544,17 @@ class ColourClassifier:
         else:
             self.clf = base.fit(X, y, sample_weight=w)
 
-        # Threshold-setting stays on the REAL, un-replicated background -- this is
-        # calibration against the actual rate-weighted population, not a training
-        # input, so it should not see synthetic noise copies.
-        sb = self.clf.predict_proba(Xb)[:, 1]
+        # Threshold-setting calibrates against self.score() -- the SAME quantity
+        # predict()/recovery_rate()/roc_curve() compare it to downstream. Using
+        # raw self.clf.predict_proba(Xb) here instead (an earlier revision's
+        # choice) would calibrate against a different quantity than the one the
+        # threshold is actually applied to whenever real uncertainty data makes
+        # score() average over replicas, silently drifting the realized FPR away
+        # from target_fpr (see docs/superpowers/specs/
+        # 2026-10-26-uncertainty-aware-noise-injection-design.md). score() already
+        # reduces to predict_proba exactly when no uncertainty data exists, so
+        # this is a true no-op in that case.
+        sb = self.score(background_events)
         self.threshold = float(weighted_quantile(sb, wb, q=1.0 - self.target_fpr))
         self._store_kde_training_data(Xs, ws, Xb, wb, sigma_s, sigma_b)
         return self

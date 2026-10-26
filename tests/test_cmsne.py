@@ -1878,6 +1878,35 @@ _es_clf_override.fit(_es_sig, _es_bg, _es_w, _es_w)
 check('an explicit early_stopping=True passed by the caller is never overridden by this fix',
       _es_clf_override.clf.get_params()['early_stopping'] is True)
 
+print('\n=== final review fix: threshold calibration matches what predict() actually compares against ===')
+# Finding: self.threshold was calibrated from raw self.clf.predict_proba(Xb), but
+# predict()/recovery_rate()/roc_curve() all compare it against self.score(), which
+# Task 3 redefined to average over each query event's OWN replicas -- a different
+# quantity whenever real uncertainty data is present. Tested directly against the
+# implementation (self.threshold must reproduce weighted_quantile(self.score(...)))
+# rather than via the realized FPR, which this project's isotonic calibration can
+# make a flaky/confounded statistic (large plateaus of tied calibrated values mean
+# weighted_quantile's exact-quantile convention doesn't land cleanly on target_fpr
+# even when calibrated against the CORRECT quantity -- a separate, pre-existing
+# property of CalibratedClassifierCV + weighted_quantile, not something this plan
+# introduced or is in scope to fix).
+_th_rng = np.random.default_rng(3)
+_n_th = 1500
+_th_sig = [{'gr': float(_th_rng.normal(1.0, 0.3)), 'peakmag': float(_th_rng.normal(22.0, 1.0)),
+            'gr_err': 0.3} for _ in range(_n_th)]
+_th_bg = [{'gr': float(_th_rng.normal(1.3, 0.3)), 'peakmag': float(_th_rng.normal(22.0, 1.0)),
+           'gr_err': 0.3} for _ in range(_n_th)]
+_th_w = np.full(_n_th, 1e-5)
+_th_clf = ColourClassifier(keys=['gr'], include_peakmag=True, target_fpr=0.10)
+_th_clf.fit(_th_sig, _th_bg, _th_w, _th_w)
+_th_expected_threshold = cm.weighted_quantile(_th_clf.score(_th_bg), _th_w, q=1.0 - _th_clf.target_fpr)
+check('self.threshold is computed from self.score(background_events) -- the SAME '
+      'quantity predict()/recovery_rate()/roc_curve() apply it against -- not from '
+      'raw predict_proba, a different quantity once real uncertainty data makes '
+      'score() average over replicas',
+      np.isclose(_th_clf.threshold, _th_expected_threshold),
+      (_th_clf.threshold, _th_expected_threshold))
+
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
