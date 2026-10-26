@@ -1758,6 +1758,41 @@ check('WITH noise injection, that point\'s own large uncertainty smears its cont
       'the probability moves back toward the confident signal population',
       _p_sg_inj is not None and _p_sg_inj > _p_sg_noinj, (_p_sg_noinj, _p_sg_inj))
 
+print('\n=== uncertainty-aware noise injection: integration ===')
+from cmsne.trajectory import TrajectoryClassifier
+
+_rank_sig = [{'gr': float(_rng_unc.normal(1.0, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+              'gr_err': 0.2} for _ in range(50)]
+_rank_bg = [{'gr': float(_rng_unc.normal(1.5, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+             'gr_err': 0.2} for _ in range(50)]
+_rank_w = np.full(50, 1e-5)
+_clf_rank = ColourClassifier(keys=['gr'], include_peakmag=True, n_uncertainty_replicates=4)
+_clf_rank.fit(_rank_sig, _rank_bg, _rank_w, _rank_w)
+_rank_query = [{'gr': float(_rng_unc.normal(1.2, 0.3)), 'peakmag': 22.0, 'gr_err': 0.2} for _ in range(10)]
+check('rank() orders by score() with no separate change needed',
+      np.array_equal(_clf_rank.rank(_rank_query), np.argsort(_clf_rank.score(_rank_query))[::-1]))
+
+
+# TrajectoryClassifier hardcodes include_peakmag=False internally and sets its
+# own self.extra -- follow the SAME construction the existing "inherits the
+# sparse-corner blend" test above already uses (_tc_event/TRAJECTORY_COLOUR_KEYS/
+# TRAJECTORY_MAGNITUDE_KEYS/_tc_key/_rng_sparse), only adding an *_err field;
+# passing keys=.../include_peakmag=... here would collide with its __init__.
+_tc_unc_sig = [_tc_event(float(_rng_sparse.normal(1.0, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
+              for _ in range(50)]
+_tc_unc_bg = [_tc_event(float(_rng_sparse.normal(1.3, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
+             for _ in range(50)]
+for _e in _tc_unc_sig + _tc_unc_bg:
+    _e[f'{_tc_key}_err'] = 0.2
+_tc_unc_w = np.full(50, 1e-5)
+_traj_clf_unc = TrajectoryClassifier(n_uncertainty_replicates=4)
+_traj_clf_unc.fit(_tc_unc_sig, _tc_unc_bg, _tc_unc_w, _tc_unc_w)
+_tc_unc_query = [_tc_event(1.1, 22.0)]
+_tc_unc_query[0][f'{_tc_key}_err'] = 0.2
+_traj_probe = _traj_clf_unc.probability(_tc_unc_query)
+check('TrajectoryClassifier inherits noise injection with no extra code',
+      np.all(np.isfinite(_traj_probe)) and np.all((_traj_probe >= 0) & (_traj_probe <= 1)), _traj_probe)
+
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
