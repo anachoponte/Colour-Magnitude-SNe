@@ -609,14 +609,20 @@ if pop_ml:
 print('\n=== multicolour: all-band photometry extraction ===')
 from cmsne import multicolour as mcol
 class _LCm:
-    def __init__(s, d, f, m):
+    def __init__(s, d, f, m, e=None):
         s.obs_days = np.array(d, float); s.obs_filters = np.array(f); s.obs_mag = np.array(m, float)
+        s.obs_mag_error = np.full(len(m), 0.1) if e is None else np.array(e, float)
 # g@2, r@3 detected; r@4 fainter; i@20 below depth (inf). Trigger = first detection (day 2).
-_lc = _LCm([2, 3, 20, 4], ['g', 'r', 'i', 'r'], [22.0, 21.5, np.inf, 21.7])
+# Errors: g@2=0.05, r@3=0.08, i@20=inf (undetected anyway), r@4=0.12.
+_lc = _LCm([2, 3, 20, 4], ['g', 'r', 'i', 'r'], [22.0, 21.5, np.inf, 21.7], [0.05, 0.08, np.inf, 0.12])
 _bp = mcol.band_photometry(_lc, 2.0, window=5.0)
 check('band_photometry picks nearest detection', np.isclose(_bp['lsstg'], 22.0) and np.isclose(_bp['lsstr'], 21.5),
       (_bp['lsstg'], _bp['lsstr']))
 check('band_photometry NaN for undetected band', np.isnan(_bp['lssti']) and np.isnan(_bp['lsstu']))
+_bpe = mcol.band_photometry_errors(_lc, 2.0, window=5.0)
+check('band_photometry_errors matches the SAME nearest-detection index as band_photometry',
+      np.isclose(_bpe['lsstg'], 0.05) and np.isclose(_bpe['lsstr'], 0.08), (_bpe['lsstg'], _bpe['lsstr']))
+check('band_photometry_errors NaN for undetected band', np.isnan(_bpe['lssti']) and np.isnan(_bpe['lsstu']))
 _f = mcol.event_multicolour(_lc)
 check('trigger epoch is first detection', _f['trigger_day'] == 2.0, _f['trigger_day'])
 check('colour = band mag difference', np.isclose(_f['gr'], 0.5), _f['gr'])
@@ -626,6 +632,16 @@ check('peakmag_firstdet is the earliest detection', np.isclose(_f['peakmag_first
 check('peakmag_fit falls back to brightest when <3 band points',
       np.isclose(_f['peakmag_fit'], 21.5), _f['peakmag_fit'])
 check('n_bands counts bands at trigger', _f['n_bands'] == 2, _f['n_bands'])
+check('event_multicolour: gr_err is the quadrature sum of the two bands\' own errors',
+      np.isclose(_f['gr_err'], np.sqrt(0.05 ** 2 + 0.08 ** 2)), _f['gr_err'])
+check('event_multicolour: colour error is NaN exactly where the colour itself is NaN',
+      np.isnan(_f['ri']) and np.isnan(_f['ri_err']))
+check('event_multicolour: peakmag_err is the error of whichever observation achieved peakmag',
+      np.isclose(_f['peakmag_err'], 0.08), _f['peakmag_err'])
+check('event_multicolour: peakmag_firstdet_err is the error of the first-detection observation',
+      np.isclose(_f['peakmag_firstdet_err'], 0.05), _f['peakmag_firstdet_err'])
+check('event_multicolour: no peakmag_fit_err field is added (explicitly out of scope)',
+      'peakmag_fit_err' not in _f)
 check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
 check('rate_weight dispatches by class',
       mcol.rate_weight('uIa', 0.3, 1.0) > 0 and mcol.rate_weight('sig', 0.3, 10.0) > 0)
