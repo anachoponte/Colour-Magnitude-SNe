@@ -16,7 +16,8 @@ methodology questions" #1).
 
 import numpy as np
 
-from .multicolour import MultiColourGenerator, band_photometry, _colours, ADJ_COLOURS, event_multicolour
+from .multicolour import (MultiColourGenerator, band_photometry, band_photometry_errors,
+                          _colours, _colours_errors, ADJ_COLOURS, event_multicolour)
 from .classifier import ColourClassifier
 
 # Canonical Δt-since-trigger checkpoints [observer-days], reusing the exact
@@ -39,11 +40,18 @@ def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
     the brightest magnitude seen in any band-photometry snapshot up to and
     including that Δt (not the eventual global peak -- using the global peak
     at an early step would leak information a live candidate could not yet
-    have).
+    have). Also records each colour's and each cumulative magnitude's
+    measurement-uncertainty companion (see docs/superpowers/specs/
+    2026-10-26-uncertainty-aware-noise-injection-design.md), mirroring
+    :func:`cmsne.multicolour.event_multicolour`'s ``*_err`` fields --
+    ``peakmag{suffix}_err`` is the error of whichever SINGLE observation
+    currently holds the cumulative-best magnitude (tracked explicitly, since
+    the cumulative best can come from an earlier step's snapshot).
 
-    :return: dict with keys ``'{colour}{suffix}'`` (e.g. ``'gr_d14'``) and
-        ``'peakmag{suffix}'`` for every grid step, plus ``trigger_day``; or
-        ``None`` if nothing was ever detected.
+    :return: dict with keys ``'{colour}{suffix}'``/``'{colour}{suffix}_err'``
+        (e.g. ``'gr_d14'``/``'gr_d14_err'``) and
+        ``'peakmag{suffix}'``/``'peakmag{suffix}_err'`` for every grid step,
+        plus ``trigger_day``; or ``None`` if nothing was ever detected.
     """
     days = np.asarray(lightcurve.obs_days, dtype=float)
     mag = np.asarray(lightcurve.obs_mag, dtype=float)
@@ -54,15 +62,22 @@ def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
     trigger = float(days[det].min())
     feat = {'trigger_day': trigger}
     cumulative_best = np.inf
+    cumulative_best_err = np.nan
     for day in grid:
         suffix = _step_suffix(day)
         m = band_photometry(lightcurve, trigger + day, window)
+        err_m = band_photometry_errors(lightcurve, trigger + day, window)
         feat.update(_colours(m, suffix))
+        feat.update(_colours_errors(err_m, suffix))
 
-        finite_here = [v for v in m.values() if np.isfinite(v)]
-        if finite_here:
-            cumulative_best = min(cumulative_best, min(finite_here))
+        finite_bands = [b for b, v in m.items() if np.isfinite(v)]
+        if finite_bands:
+            step_best_band = min(finite_bands, key=lambda b: m[b])
+            if m[step_best_band] < cumulative_best:
+                cumulative_best = m[step_best_band]
+                cumulative_best_err = err_m[step_best_band]
         feat[f'peakmag{suffix}'] = cumulative_best if np.isfinite(cumulative_best) else np.nan
+        feat[f'peakmag{suffix}_err'] = cumulative_best_err
 
     return feat
 
@@ -81,7 +96,9 @@ def reveal_up_to(event, k, grid=TRAJECTORY_GRID):
     Simulates having observed only the first ``k + 1`` grid steps (``k=0``
     means trigger only) -- used to score a trajectory event as it would have
     looked at an earlier point in its sequence, without re-simulating
-    anything.
+    anything. Also NaNs out each hidden step's ``*_err`` companions -- a
+    step that hasn't happened yet cannot leak its own measurement
+    uncertainty either.
 
     :param k: last visible grid-step index (0-based).
     :return: a new dict; ``event`` itself is not modified.
@@ -92,7 +109,9 @@ def reveal_up_to(event, k, grid=TRAJECTORY_GRID):
     for step in range(k + 1, n_steps):
         for key in TRAJECTORY_COLOUR_KEYS[step * cols_per_step:(step + 1) * cols_per_step]:
             e[key] = np.nan
+            e[f'{key}_err'] = np.nan
         e[TRAJECTORY_MAGNITUDE_KEYS[step]] = np.nan
+        e[f'{TRAJECTORY_MAGNITUDE_KEYS[step]}_err'] = np.nan
     return e
 
 

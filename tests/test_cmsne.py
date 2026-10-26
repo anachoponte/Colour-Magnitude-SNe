@@ -656,7 +656,9 @@ check('MultiColourGenerator._event_features defaults to event_multicolour',
 print('\n=== trajectory: N-point colour-magnitude generation ===')
 from cmsne import trajectory as traj
 # g@2,r@3 detected at trigger; g brighter again @20, r follows @23.
-_lct = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0])
+# Errors: g@2=0.05, r@3=0.08, g@20=0.03, r@23=0.06.
+_lct = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0],
+            [0.05, 0.08, 0.03, 0.06])
 _ft = traj.event_trajectory(_lct, grid=(0.0, 20.0), window=5.0)
 check('trigger epoch is first detection', _ft['trigger_day'] == 2.0, _ft['trigger_day'])
 check('colour at day 0 matches multicolour.event_multicolour',
@@ -668,6 +670,17 @@ check('cumulative peakmag at day 20 improves (brighter point included)',
       np.isclose(_ft['peakmag_d20'], 20.0), _ft['peakmag_d20'])
 check('no detections -> None',
       traj.event_trajectory(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+
+check('event_trajectory: gr_d0_err is the quadrature sum of the trigger-snapshot bands\' own errors',
+      np.isclose(_ft['gr_d0_err'], np.sqrt(0.05 ** 2 + 0.08 ** 2)), _ft['gr_d0_err'])
+check('event_trajectory: gr_d20_err uses the day-20-snapshot bands\' own errors',
+      np.isclose(_ft['gr_d20_err'], np.sqrt(0.03 ** 2 + 0.06 ** 2)), _ft['gr_d20_err'])
+check('event_trajectory: peakmag_d0_err is the error of whichever observation achieved '
+      'the cumulative-best magnitude at day 0 (r@3, the brighter of g@2/r@3)',
+      np.isclose(_ft['peakmag_d0_err'], 0.08), _ft['peakmag_d0_err'])
+check('event_trajectory: peakmag_d20_err tracks the NEW observation once it supersedes '
+      'the running best (g@20=20.0 is brighter than the day-0 best of 21.5)',
+      np.isclose(_ft['peakmag_d20_err'], 0.03), _ft['peakmag_d20_err'])
 check('TRAJECTORY_COLOUR_KEYS has 5 colours x 5 grid steps',
       len(traj.TRAJECTORY_COLOUR_KEYS) == 25, len(traj.TRAJECTORY_COLOUR_KEYS))
 check('TRAJECTORY_MAGNITUDE_KEYS has one peakmag per grid step',
@@ -723,6 +736,19 @@ check('reveal_up_to NaNs out steps beyond k',
       np.isnan(revealed['gr_d60']) and np.isnan(revealed['peakmag_d60']))
 check('reveal_up_to does not mutate the original event',
       np.isfinite(sig_t[0]['gr_d14']))
+
+_sig_t_err = dict(sig_t[0])
+for _k in TRAJECTORY_COLOUR_KEYS:
+    _sig_t_err[f'{_k}_err'] = 0.2
+for _k in TRAJECTORY_MAGNITUDE_KEYS:
+    _sig_t_err[f'{_k}_err'] = 0.1
+_revealed_err = reveal_up_to(_sig_t_err, 1, TRAJECTORY_GRID)
+check('reveal_up_to also NaNs out *_err keys for steps beyond k (not just the values) '
+      '-- a hidden future step must not leak its own measurement uncertainty either',
+      np.isnan(_revealed_err['gr_d14_err']) and np.isnan(_revealed_err['peakmag_d14_err']) and
+      np.isnan(_revealed_err['gr_d60_err']) and np.isnan(_revealed_err['peakmag_d60_err']))
+check('reveal_up_to keeps *_err keys for steps 0-1 finite',
+      np.isfinite(_revealed_err['gr_d0_err']) and np.isfinite(_revealed_err['gr_d3_err']))
 
 fpr_r, tpr_r, thr_r = tclf.roc_curve(sig_t, bg_t)
 check('roc_curve returns matching-length fpr/tpr/thresholds arrays',
