@@ -287,3 +287,107 @@ deferred — unlike every prior spec in this investigation):
    `n_uncertainty_replicates` as a fourth tuning axis alongside
    `ess_threshold`/`log_width`/`kde_min_ess`.
 4. Re-measure total combined timing overhead (see Performance).
+
+## Validation results (confirmed against real BlueBEAR data, job `59044740`)
+
+**Implementation is confirmed correct; it does not rescue the bright+red
+corner, and the reason is now understood.** All unit tests pass (305/305,
+see `tests/test_cmsne.py`'s own synthetic issue #37 reproduction), and the
+mechanism is proven present and working on the real regenerated population
+(`results/mc_59044740`, 10 classes, 52,780-141,428 events/class, same
+`--n 100000` scale as `mc_58818280`). Every finite colour/magnitude in the
+regenerated population carries a finite, positive `*_err` (spot-checked
+directly: 100% coverage across all 10 classes).
+
+**The literal original smoking-gun event is still there, and still barely
+moved.** The exact `unlensed_sn2p` draw this investigation's "Problem"
+section was built on recurs in the regenerated population (`gr=6.160`,
+`peakmag=13.5`, `z=0.00330`, same identity as the original finding). Its
+real, propagated `gr_err` is **0.0073** — only ~5% of the `gr` KDE
+bandwidth (`0.1382`, Scott's rule). Noise-injecting it with 500 replicas at
+its own real `σ` changes its kernel contribution at its own location by
+**0.13%** (ratio 0.9987). The hand-picked synthetic unit test used `σ=5.0`
+(36× the bandwidth) specifically to demonstrate the mechanism clearly; the
+real LSST single-visit photometric error model near the detection limit
+never produces an uncertainty anywhere near that large, because a colour's
+error is the quadrature sum of two per-band errors and LSST single-visit
+magnitude errors are O(0.01-0.3 mag), not unbounded as a measurement
+approaches the depth cut. The original hypothesis — "a point at the
+detection limit is treated as noiseless when it should carry large
+uncertainty" — is correct in direction but the real uncertainty magnitude
+turns out to be far too small, relative to the KDE's own bandwidth, to
+matter.
+
+**The actual corner-dominating mechanism is different from the original
+hypothesis, at the specific grid points tested.** Direct 2D kernel-distance
+inspection at the corner query `(gr=2.0, peakmag=16.0)` found the nearest
+real background training point (`gr=2.084`, `peakmag=16.462`,
+`gr_err=0.0283`) carries a weight (`1.999e-05`) roughly **5 orders of
+magnitude larger** than its neighbors (`~1e-13`-`1e-14`) — an
+importance-sampling-boosted rare-cell draw, not a near-detection-limit
+measurement. Its own `gr_err/bandwidth` ratio (`0.20`) is larger than the
+`gr=6.16` event's but still modest; a single overwhelmingly-weighted point
+survives noise injection's smearing by design (replication redistributes
+*where* its mass sits locally, not *how much* total mass it carries). This
+is a distinct statistical fragility — sample-weight concentration from
+importance-sampling boosting — that measurement-uncertainty smearing was
+never intended to address.
+
+**Four-axis sweep (`ess_threshold`/`log_width`/`kde_min_ess`/
+`n_uncertainty_replicates`) on the real data:**
+- `n_uncertainty_replicates` swept at `[1, 4, 8, 16, 32]` (1 = explicit
+  no-injection baseline) at the four corner test points: `p_blended` moves
+  by at most ~0.001 absolute across the entire sweep (e.g. `gr=2.0,
+  peakmag=16.0`: 0.0031 → 0.0031 → 0.0031 → 0.0030 → 0.0031 for
+  replicates 1/4/8/16/32) — consistent with the small real `σ`/bandwidth
+  ratios found above. The other three axes reproduce the SAME qualitative
+  behaviour already characterised in the adaptive-bandwidth and
+  subsampling-fix investigations (widening engages and can flip the
+  corner's sign once `kde_min_ess` crosses ~5; `ess_threshold`/`log_width`
+  control how much weight the blend gives the KDE side).
+- **Bright+red corner (`P(lensed) > 0.9`) re-check: FAILS**, exactly as
+  before noise injection — `min=0.0002, median=0.0005, max=0.9997` over
+  3000 grid points, byte-for-byte consistent with the pre-noise-injection
+  subsampling-fix validation's own corner numbers
+  (`docs/superpowers/specs/2026-10-26-kde-pattern-aware-subsampling-design.md`).
+  This failure was already understood to be driven by genuine `lensed_Ia`
+  Monte Carlo sparsity in that extreme region (~13-15 raw events out of
+  100,000 attempted, per that investigation) — not something noise
+  injection, which only smears *measurement* uncertainty, could ever have
+  been expected to fix.
+- **Bulk backward-compatibility**: 427/40,000 grid points reach
+  `alpha > 0.99` (up from 304/40,000 in the subsampling-fix validation on
+  the OLD population — not a regression, just a different random
+  population draw at larger scale); `max|blended-tree|` in that bulk
+  region is 0.0031, `mean` 0.0014 — both still effectively zero, confirming
+  noise injection is a true no-op in the dense bulk exactly as designed.
+  34,868/40,000 points have `alpha<0.5` (mechanism actively engaging) —
+  this population's signal/background overlap is evidently sparser almost
+  everywhere outside the dense core than the earlier, smaller `mc_58818280`
+  population; not investigated further here as it is outside this plan's
+  scope (noise injection itself, not the blend-weight tuning).
+- **Boundary figure**: `results/boundary_gr_noise_injection.png` written
+  (gr-band heatmap, same style as the adaptive-bandwidth investigation's
+  own figure).
+- **Timing** (200×200 grid): tree-only baseline 96.6s; blend+widening with
+  `n_uncertainty_replicates=1` (no injection) 44.2s; blend+widening+
+  injection at the default `n_uncertainty_replicates=8` 215.1s (2.2× the
+  tree-only baseline, 4.9× the no-injection blend). The no-injection blend
+  case being *faster* than the tree-only baseline is unexplained by this
+  investigation (plausibly `CalibratedClassifierCV`'s isotonic-fit
+  variance across runs) and not pursued further — the number that matters
+  for real use, the full combined overhead, is the 2.2× figure.
+
+**Conclusion.** The feature is implemented and tested correctly (unit and
+integration), is a true no-op wherever no uncertainty data exists, and does
+measurably smear the few real training points whose propagated uncertainty
+is large relative to the KDE bandwidth. On this real LSST-cadence
+population, however, those uncertainties are uniformly too small relative
+to the bandwidth to move the bright+red corner's headline number, and the
+corner's actual dominant failure mode at the specific grid points tested is
+importance-sampling weight concentration, not measurement noise. Issue #37
+remains open for a different reason than originally hypothesised — its
+resolution (if pursued) likely lies in rate-boosting/subsampling of
+extreme-weight draws rather than in measurement-uncertainty modelling.
+This plan's own scope (uncertainty-aware noise injection) is complete and
+validated on its own terms.
