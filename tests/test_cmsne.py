@@ -1452,6 +1452,46 @@ check('kde_max_events above the actual event count leaves the stored set untouch
       _clf_nocap._kde_Xs.shape[0] == np.sum(_cap_weights > 0), _clf_nocap._kde_Xs.shape[0])
 
 
+print('\n=== adaptive KDE bandwidth: _widened_kernel_values ===')
+from cmsne.classifier import _widened_kernel_values, DEFAULT_KDE_MIN_ESS
+from cmsne.importance_sampling import effective_sample_size as _ess_ref
+
+# Dense case: ess already >= min_ess at scale=1 -> no-op.
+_wk_h = np.array([1.0])
+_wk_dims = np.array([0])
+_wk_X_dense = np.array([[0.0], [0.1], [-0.1], [0.05], [-0.05],
+                        [0.2], [-0.2], [0.15], [-0.15], [0.02]])
+_wk_w_dense = np.full(10, 1e-5)
+_g_unwidened = _kernel_weighted_values(np.array([0.0]), _wk_X_dense, _wk_w_dense, _wk_h, _wk_dims)
+_g_widened, _ess_widened = _widened_kernel_values(
+    np.array([0.0]), _wk_X_dense, _wk_w_dense, _wk_h, _wk_dims, min_ess=5.0)
+check('_widened_kernel_values is a no-op when min_ess is already satisfied at scale=1',
+      np.allclose(_g_widened, _g_unwidened), (_g_widened, _g_unwidened))
+
+# Sparse case: one near point dominates (ESS~1 at scale=1); several farther
+# points only start contributing once the kernel widens.
+_wk_X_sparse = np.array([[2.0], [10.0], [10.0], [10.0]])
+_wk_w_sparse = np.full(4, 1e-5)
+_g_fixed = _kernel_weighted_values(np.array([0.0]), _wk_X_sparse, _wk_w_sparse, _wk_h, _wk_dims)
+_ess_fixed = _ess_ref(_g_fixed)
+_g_w, _ess_w = _widened_kernel_values(
+    np.array([0.0]), _wk_X_sparse, _wk_w_sparse, _wk_h, _wk_dims, min_ess=2.0)
+check('_widened_kernel_values raises local ESS above the unwidened (single-point-dominated) value',
+      _ess_w > _ess_fixed and _ess_fixed < 1.5, (_ess_w, _ess_fixed))
+check('_widened_kernel_values reaches the requested min_ess in this scenario',
+      _ess_w >= 2.0 - 1e-6, _ess_w)
+
+# Ceiling/plateau case: only 2 points have positive weight -- no amount of
+# widening can push ESS above effective_sample_size(weights) itself.
+_wk_X_ceiling = np.array([[50.0], [50.1]])
+_wk_w_ceiling = np.array([1e-5, 1e-5])
+_ceiling = _ess_ref(_wk_w_ceiling)
+_g_c, _ess_c = _widened_kernel_values(
+    np.array([0.0]), _wk_X_ceiling, _wk_w_ceiling, _wk_h, _wk_dims, min_ess=100.0, max_iter=20)
+check('_widened_kernel_values stops at the class ceiling rather than looping uselessly to max_iter',
+      np.isclose(_ess_c, _ceiling, atol=1e-3), (_ess_c, _ceiling))
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)

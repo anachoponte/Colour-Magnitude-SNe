@@ -42,6 +42,7 @@ DEFAULT_MAGNITUDE_FEATURE = 'peakmag'   # brightest-observed sample across all b
 DEFAULT_ESS_THRESHOLD = 10.0
 DEFAULT_LOG_WIDTH = 0.3
 DEFAULT_KDE_MAX_EVENTS = 4000
+DEFAULT_KDE_MIN_ESS = 10.0
 
 
 def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
@@ -122,6 +123,46 @@ def _kernel_weighted_values(x, X, weights, bandwidths, dims):
     z = (Xd - xd) / hd
     k = np.exp(-0.5 * np.sum(z ** 2, axis=1))
     return np.asarray(weights, dtype=float) * k
+
+
+def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0, max_iter=20):
+    """Kernel-weighted values at ``x``, with the kernel's bandwidth
+    isotropically widened (by ``growth`` per iteration, up to ``max_iter``
+    times) until the resulting local ESS reaches ``min_ess``, or until
+    widening stops helping (plateaus at this class's own overall ESS
+    ceiling) -- whichever comes first.
+
+    This exists ONLY to make the KDE side's own ``S``/``B`` sums
+    statistically meaningful in genuinely data-starved regions, where a
+    fixed bandwidth's local ESS can be dominated by a single surviving
+    training point (see docs/superpowers/specs/
+    2026-10-26-adaptive-kde-bandwidth-design.md). It is NOT used for the
+    tree-vs-KDE blend-weight decision, which stays on the fixed-bandwidth
+    ESS computed separately in :func:`_local_density_ratio`.
+
+    :return: ``(g, ess)`` -- the kernel-weighted values and the local ESS
+        at whichever scale the widening stopped at.
+    """
+    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+    from .importance_sampling import effective_sample_size
+
+    scale = 1.0
+    g = _kernel_weighted_values(x, X, weights, bandwidths, dims)
+    ess = effective_sample_size(g)
+    if ess >= min_ess:
+        return g, ess
+    ceiling = effective_sample_size(weights)
+    for _ in range(max_iter):
+        if ess >= min_ess or ess >= ceiling - 1e-9:
+            break
+        scale *= growth
+        g_new = _kernel_weighted_values(x, X, weights, bandwidths * scale, dims)
+        ess_new = effective_sample_size(g_new)
+        if ess_new <= ess:
+            ess = ess_new
+            break
+        g, ess = g_new, ess_new
+    return g, ess
 
 
 def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims):
