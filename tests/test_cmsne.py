@@ -1794,6 +1794,91 @@ check('TrajectoryClassifier inherits noise injection with no extra code',
       np.all(np.isfinite(_traj_probe)) and np.all((_traj_probe >= 0) & (_traj_probe <= 1)), _traj_probe)
 
 
+print('\n=== final review fix: _replicate_with_uncertainty is batch/row-order independent ===')
+# Finding from the final whole-branch review: _replicate_with_uncertainty drew noise
+# from one shared rng stream across the WHOLE call's perturbable rows, so a given
+# row's draws depended on how many OTHER rows preceded it in the same call -- i.e.
+# the same logical event (same X, same sigma) got DIFFERENT replicated values
+# depending on what else shared its batch, so score()/predict() on a query event
+# could change depending on what else was in the list passed alongside it.
+_bi_sigma_row = np.array([[2.0]])
+_bi_X_row = np.array([[5.0]])
+_bi_Xr_alone, _, _ = _replicate_with_uncertainty(_bi_X_row, _bi_sigma_row, np.array([1.0]), np.array([0]), 8)
+
+_bi_sigma_pair = np.array([[2.0], [2.0]])
+_bi_X_pair = np.array([[3.0], [5.0]])  # the row of interest (5.0) now has ONE other row before it
+_bi_Xr_pair, _, _bi_eid_pair = _replicate_with_uncertainty(
+    _bi_X_pair, _bi_sigma_pair, np.array([1.0, 1.0]), np.array([0]), 8)
+_bi_row5_in_pair = np.sort(_bi_Xr_pair[_bi_eid_pair == 1, 0])
+check('the SAME logical row\'s replicated values are identical whether it is replicated '
+      'alone or preceded by another row in the same call (previously depended on batch order)',
+      np.allclose(np.sort(_bi_Xr_alone[:, 0]), _bi_row5_in_pair),
+      (np.sort(_bi_Xr_alone[:, 0]), _bi_row5_in_pair))
+
+# Same fix must also decorrelate independent rows: signal and background training
+# rows replicated in separate calls with the same default seed must NOT receive
+# the same underlying noise sequence (previously true since both calls freshly
+# seeded the SAME global seed=0).
+_bi_sigma_dummy = np.full((5, 1), 0.2)
+_bi_X_a = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+_bi_X_b = np.array([[10.0], [20.0], [30.0], [40.0], [50.0]])
+_bi_Xa_rep, _, _ = _replicate_with_uncertainty(_bi_X_a, _bi_sigma_dummy, np.full(5, 1.0), np.array([0]), 8)
+_bi_Xb_rep, _, _ = _replicate_with_uncertainty(_bi_X_b, _bi_sigma_dummy, np.full(5, 1.0), np.array([0]), 8)
+_bi_noise_a = (_bi_Xa_rep[:, 0] - np.repeat(_bi_X_a[:, 0], 8))
+_bi_noise_b = (_bi_Xb_rep[:, 0] - np.repeat(_bi_X_b[:, 0], 8))
+check('two independent arrays replicated with the same default seed get DIFFERENT '
+      'noise (previously identical, since both reused the same fresh seed=0 stream)',
+      not np.allclose(_bi_noise_a, _bi_noise_b))
+
+print('\n=== final review fix: replication does not trigger spurious early-stopping ===')
+# Finding: HistGradientBoostingClassifier's early_stopping='auto' (the default)
+# engages once n_samples > 10,000. Replication multiplies the row count the
+# tree actually trains on by n_uncertainty_replicates, so a population whose
+# ORIGINAL size would never have triggered auto early-stopping can cross that
+# threshold once replicated -- a replication-induced behaviour change, not
+# just added noise. Worse, HGB's internal train/validation split can then put
+# near-duplicate replicas of the SAME event on both sides, so validation loss
+# looks artificially good. early_stopping must be decided from the ORIGINAL
+# (pre-replication) sample count, matching what sklearn's own 'auto' would
+# have decided with no replication in play.
+_es_rng = np.random.default_rng(31)
+_n_es = 700  # 700 signal + 700 background = 1400 original rows, well under 10,000 alone
+_es_sig = [{'gr': float(_es_rng.normal(1.0, 0.3)), 'peakmag': float(_es_rng.normal(22.0, 1.0)),
+            'gr_err': 0.2} for _ in range(_n_es)]
+_es_bg = [{'gr': float(_es_rng.normal(1.3, 0.3)), 'peakmag': float(_es_rng.normal(22.0, 1.0)),
+           'gr_err': 0.2} for _ in range(_n_es)]
+_es_w = np.full(_n_es, 1e-5)
+# n_uncertainty_replicates=8 (default) x 1400 = 11,200 > 10,000 -- sklearn's own
+# early_stopping='auto' heuristic only sees this REPLICATED count and would enable
+# it, even though the "samples" it would validate against are near-duplicate
+# (noise-perturbed) copies of only 1,400 distinct original events -- siblings can
+# land on both sides of its internal train/validation split, so validation loss
+# doesn't hold anything genuinely out. Test the DECISION directly (not n_iter_,
+# which this exact leakage can make an unreliable proxy either direction).
+_es_clf = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False)
+_es_clf.fit(_es_sig, _es_bg, _es_w, _es_w)
+check('early_stopping is explicitly disabled when noise-injection replication actually '
+      'occurred, overriding sklearn\'s own auto-heuristic which only sees the inflated '
+      'REPLICATED sample count',
+      _es_clf.clf.get_params()['early_stopping'] is False)
+
+# No-op case (no uncertainty data anywhere) must be entirely unchanged: early_stopping
+# stays at sklearn's own default exactly as before this fix.
+_es_clf_noerr = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False)
+_es_clf_noerr.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
+check('early_stopping is left at sklearn\'s own default when no replication occurred '
+      '(true no-op, unaffected by this fix)',
+      _es_clf_noerr.clf.get_params()['early_stopping'] == 'auto')
+
+# An explicit user override of early_stopping must always be respected, whether or
+# not replication occurs.
+_es_clf_override = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                                    early_stopping=True)
+_es_clf_override.fit(_es_sig, _es_bg, _es_w, _es_w)
+check('an explicit early_stopping=True passed by the caller is never overridden by this fix',
+      _es_clf_override.clf.get_params()['early_stopping'] is True)
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)

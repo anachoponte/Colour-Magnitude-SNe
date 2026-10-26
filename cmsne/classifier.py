@@ -15,6 +15,7 @@ feature keys you have. Multi-colour events (:class:`cmsne.multicolour`) expose
 expose ``lensed_colour`` and ``band_1_mag_l``.
 """
 
+import hashlib
 from typing import NamedTuple
 
 import numpy as np
@@ -150,6 +151,18 @@ def _kernel_weighted_values(x, X, weights, bandwidths, dims):
     return np.asarray(weights, dtype=float) * k
 
 
+def _row_content_seed(base_seed, x_row, sigma_row):
+    """Deterministic seed derived from a row's OWN feature + sigma values (not
+    from its position in any particular array/batch), so replicating the same
+    logical event always draws the same noise regardless of what else shares
+    the call -- see :func:`_replicate_with_uncertainty`.
+    """
+    payload = np.concatenate([[float(base_seed)], np.nan_to_num(x_row, nan=-1e18),
+                               np.nan_to_num(sigma_row, nan=-1e18)]).astype(np.float64)
+    digest = hashlib.sha256(payload.tobytes()).digest()
+    return int.from_bytes(digest[:8], 'little') % (2 ** 32)
+
+
 def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0):
     """Expand each row of ``X`` into ``n_replicates`` noisy copies, perturbed
     per dimension in ``dims`` by that row's own ``sigma`` (non-finite or
@@ -157,6 +170,16 @@ def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0):
     replica of that row -- nothing to perturb with is not an error). Each
     replica carries ``weights / n_replicates``, so summed weight mass per
     original row is preserved exactly.
+
+    Each row draws its noise from an independent RNG stream seeded from
+    ``(seed, that row's own X, that row's own sigma)`` -- NOT from its
+    position in ``X`` or from a single stream shared across every row in the
+    call. This guarantees the same logical event (same features, same
+    uncertainty) always replicates to the same values regardless of what
+    else shares the call -- e.g. ``score([a, b])[1]`` and ``score([b])[0]``
+    must agree for the same event ``b``, which a single shared RNG stream
+    cannot guarantee (a row's draws would otherwise depend on how many other
+    perturbable rows preceded it in that specific call).
 
     :return: ``(X_rep, w_rep, event_id)``. ``event_id[k]`` is the index into
         the ORIGINAL ``X``/``weights`` that ``X_rep[k]`` came from -- needed
@@ -176,14 +199,18 @@ def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0):
     if n_replicates <= 1 or len(dims) == 0 or not np.any(np.isfinite(sigma[:, dims]) & (sigma[:, dims] > 0)):
         return X, weights, np.arange(len(X))
 
-    rng = np.random.default_rng(seed)
     n = len(X)
     X_rep = np.repeat(X, n_replicates, axis=0)
     event_id = np.repeat(np.arange(n), n_replicates)
-    sigma_rep = np.repeat(sigma, n_replicates, axis=0)
-    for d in dims:
-        perturbable = np.isfinite(sigma_rep[:, d]) & (sigma_rep[:, d] > 0)
-        X_rep[perturbable, d] += rng.normal(0.0, sigma_rep[perturbable, d])
+    for i in range(n):
+        row_sigma = sigma[i, dims]
+        perturbable_dims = dims[np.isfinite(row_sigma) & (row_sigma > 0)]
+        if len(perturbable_dims) == 0:
+            continue
+        rng = np.random.default_rng(_row_content_seed(seed, X[i], sigma[i]))
+        sl = slice(i * n_replicates, (i + 1) * n_replicates)
+        for d in perturbable_dims:
+            X_rep[sl, d] += rng.normal(0.0, sigma[i, d], size=n_replicates)
     w_rep = np.repeat(weights, n_replicates) / n_replicates
     return X_rep, w_rep, event_id
 
@@ -499,7 +526,19 @@ class ColourClassifier:
         # the replicated arrays.
         self.train_prior = float(ws.sum() / (ws.sum() + wb.sum()))
 
-        base = HistGradientBoostingClassifier(**self.params)
+        params = dict(self.params)
+        replicated = len(Xs_rep) != len(Xs) or len(Xb_rep) != len(Xb)
+        if replicated and 'early_stopping' not in self.params:
+            # Replication creates K near-duplicate (noise-perturbed) copies of
+            # each original event. HistGradientBoostingClassifier's own
+            # early_stopping='auto' heuristic enables itself from the inflated,
+            # REPLICATED sample count -- but its internal train/validation split
+            # can then land siblings of the same original event on both sides,
+            # so validation loss no longer reflects genuinely held-out data (see
+            # docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+            # Disable it unless the caller explicitly set early_stopping themselves.
+            params['early_stopping'] = False
+        base = HistGradientBoostingClassifier(**params)
         if self.calibrate:
             self.clf = CalibratedClassifierCV(base, method='isotonic', cv=3).fit(X, y, sample_weight=w)
         else:
