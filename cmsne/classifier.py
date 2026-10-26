@@ -360,14 +360,29 @@ class ColourClassifier:
         return self
 
     def _store_kde_training_data(self, Xs, ws, Xb, wb):
-        """Retain (optionally subsampled) training events/weights + bandwidths
-        for the local density-ratio blend in :meth:`probability`, and reset
-        the per-pattern cache. ``ws``/``wb`` must already be the *balanced*
-        weights computed earlier in :meth:`fit`, matching ``p_tree``'s own
-        balanced-training-prior convention.
+        """Retain the full (positive-weight) training events/weights +
+        bandwidths for the local density-ratio blend in :meth:`probability`,
+        and reset the per-pattern cache. ``ws``/``wb`` must already be the
+        *balanced* weights computed earlier in :meth:`fit`, matching
+        ``p_tree``'s own balanced-training-prior convention.
+
+        ``kde_max_events`` subsampling does NOT happen here -- it happens
+        lazily, per missing-data pattern, in :meth:`_kde_subset_for_pattern`.
+        Real survey populations can have most events missing one or more
+        features (different bands get a detection for different events);
+        subsampling the full, NaN-mixed population *before* any pattern-
+        specific finite-row filter wastes most of the budget on rows a
+        given pattern discards anyway -- e.g. on BlueBEAR production data,
+        capping at 4000 events before filtering left only ~65 rows (1.6%)
+        usable for the all-features-finite pattern, versus ~2600 actually
+        available. Filtering first, then capping per pattern, spends the
+        budget only on rows that pattern can use. See docs/superpowers/
+        specs/2026-10-26-kde-pattern-aware-subsampling-design.md.
         """
-        self._kde_Xs, self._kde_ws = _weighted_subsample(Xs, ws, self.kde_max_events)
-        self._kde_Xb, self._kde_wb = _weighted_subsample(Xb, wb, self.kde_max_events)
+        pos_s = ws > 0
+        pos_b = wb > 0
+        self._kde_Xs, self._kde_ws = Xs[pos_s], ws[pos_s]
+        self._kde_Xb, self._kde_wb = Xb[pos_b], wb[pos_b]
         pooled_X = np.vstack([self._kde_Xs, self._kde_Xb])
         pooled_w = np.r_[self._kde_ws, self._kde_wb]
         self._kde_bandwidths = _scott_bandwidths(pooled_X, pooled_w)
@@ -433,22 +448,35 @@ class ColourClassifier:
         return out
 
     def _kde_subset_for_pattern(self, pattern, dims):
-        """Training rows finite over ``dims``, plus each class's overall ESS
-        ceiling restricted to that subset, cached per ``pattern`` on this
-        instance (reset by :meth:`fit`). The ceilings depend only on the
+        """Training rows finite over ``dims``, weighted-subsampled to at
+        most ``kde_max_events`` (independently per class), plus each
+        resulting subset's ESS ceiling -- cached per ``pattern`` on this
+        instance (reset by :meth:`fit`).
+
+        Subsampling happens HERE, after the finite-row filter, not in
+        :meth:`_store_kde_training_data` -- so the ``kde_max_events`` budget
+        is spent only on rows this specific pattern can actually use. Each
+        distinct pattern gets its own independent cap, rather than all
+        patterns competing for one global cap drawn before anyone knows
+        which rows which pattern needs (see docs/superpowers/specs/
+        2026-10-26-kde-pattern-aware-subsampling-design.md for why this
+        matters on real data). The ceilings depend only on the resulting
         subset's weights, never on the query point, so caching them here
         (rather than recomputing in :func:`_local_density_ratio` on every
-        event that shares this pattern) avoids an O(n) pass per event."""
+        event that shares this pattern) avoids an O(n) pass per event.
+        """
         if pattern not in self._kde_pattern_cache:
             # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
             from .importance_sampling import effective_sample_size
 
             finite_s = np.all(np.isfinite(self._kde_Xs[:, dims]), axis=1)
             finite_b = np.all(np.isfinite(self._kde_Xb[:, dims]), axis=1)
-            ws_p = self._kde_ws[finite_s]
-            wb_p = self._kde_wb[finite_b]
+            Xs_p, ws_p = _weighted_subsample(
+                self._kde_Xs[finite_s], self._kde_ws[finite_s], self.kde_max_events)
+            Xb_p, wb_p = _weighted_subsample(
+                self._kde_Xb[finite_b], self._kde_wb[finite_b], self.kde_max_events)
             self._kde_pattern_cache[pattern] = (
-                self._kde_Xs[finite_s], ws_p, self._kde_Xb[finite_b], wb_p,
+                Xs_p, ws_p, Xb_p, wb_p,
                 effective_sample_size(ws_p), effective_sample_size(wb_p))
         return self._kde_pattern_cache[pattern]
 

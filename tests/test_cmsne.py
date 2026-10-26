@@ -1432,24 +1432,61 @@ _bc_tree_only = np.clip(_clf_bc.score(_bc_pts), 1e-12, 1 - 1e-12)
 check('production-shaped dense region: blended probability() unchanged from tree-only score()',
       np.allclose(_bc_blended, _bc_tree_only, atol=1e-3), (_bc_blended, _bc_tree_only))
 
-# kde_max_events caps the stored KDE training set.
+# kde_max_events now caps each missing-data PATTERN's own subsample, lazily
+# in _kde_subset_for_pattern -- not the globally stored training set, which
+# is now the full (positive-weight) population (see
+# docs/superpowers/specs/2026-10-26-kde-pattern-aware-subsampling-design.md).
 _rng_cap = np.random.default_rng(6)
 _n_cap = 500
 _cap_events = [{'gr': float(_rng_cap.normal(0, 1))} for _ in range(_n_cap)]
 _cap_weights = np.abs(_rng_cap.normal(1e-6, 1e-7, _n_cap))
 _clf_cap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=50)
 _clf_cap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
-check('kde_max_events caps the stored KDE signal set to at most the cap',
-      _clf_cap._kde_Xs.shape[0] <= 50, _clf_cap._kde_Xs.shape[0])
-check('kde_max_events preserves total rate mass after subsampling (within 1%)',
-      abs(_clf_cap._kde_ws.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
-      (_clf_cap._kde_ws.sum(), _cap_weights.sum()))
+check('_kde_Xs now stores the full positive-weight population, unaffected by kde_max_events',
+      _clf_cap._kde_Xs.shape[0] == np.sum(_cap_weights > 0), _clf_cap._kde_Xs.shape[0])
+_Xs_capped, _ws_capped, _, _, _, _ = _clf_cap._kde_subset_for_pattern((True,), np.array([0]))
+check('kde_max_events caps the PER-PATTERN subsample (via _kde_subset_for_pattern) to at most the cap',
+      _Xs_capped.shape[0] <= 50, _Xs_capped.shape[0])
+check('kde_max_events preserves total rate mass after per-pattern subsampling (within 1%)',
+      abs(_ws_capped.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
+      (_ws_capped.sum(), _cap_weights.sum()))
 
-# Below the cap: no subsampling, nothing changes.
+# Below the cap: no subsampling, nothing changes at the pattern level either.
 _clf_nocap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=10000)
 _clf_nocap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
-check('kde_max_events above the actual event count leaves the stored set untouched',
-      _clf_nocap._kde_Xs.shape[0] == np.sum(_cap_weights > 0), _clf_nocap._kde_Xs.shape[0])
+_Xs_nocap, _, _, _, _, _ = _clf_nocap._kde_subset_for_pattern((True,), np.array([0]))
+check('kde_max_events above the actual event count leaves the per-pattern subset untouched',
+      _Xs_nocap.shape[0] == np.sum(_cap_weights > 0), _Xs_nocap.shape[0])
+
+print('\n=== KDE pattern-aware subsampling: budget is not wasted on rows a pattern cannot use ===')
+# Mimics the real bug at small scale: 950/1000 rows are missing column 1
+# (e.g. peakmag never measured for most events), 50 have both columns.
+# With the OLD design (subsample kde_max_events=10 from all 1000 BEFORE
+# filtering), the all-finite pattern would expect only ~0.5 of those 10 to
+# actually be finite in both columns -- almost certainly 0. The fix filters
+# per pattern FIRST, so the all-finite pattern's own cap is reached in full,
+# and a second, disjoint pattern reaches its own cap independently (patterns
+# do not compete for one shared, order-dependent draw).
+_rng_waste = np.random.default_rng(7)
+_n_both = 50
+_n_col0_only = 950
+_Xs_waste = np.vstack([
+    np.column_stack([_rng_waste.normal(0, 1, _n_both), _rng_waste.normal(20, 1, _n_both)]),
+    np.column_stack([_rng_waste.normal(0, 1, _n_col0_only), np.full(_n_col0_only, np.nan)]),
+])
+_ws_waste = np.full(_n_both + _n_col0_only, 1e-6)
+_clf_waste = ColourClassifier(keys=['gr'], include_peakmag=True, kde_max_events=10)
+_clf_waste.columns = ['gr', 'peakmag']
+_clf_waste._store_kde_training_data(_Xs_waste, _ws_waste, _Xs_waste, _ws_waste)
+check('_store_kde_training_data retains the FULL population (no global subsampling)',
+      _clf_waste._kde_Xs.shape[0] == _n_both + _n_col0_only, _clf_waste._kde_Xs.shape[0])
+_Xs_both, _, _, _, _, _ = _clf_waste._kde_subset_for_pattern((True, True), np.array([0, 1]))
+check('the all-finite pattern reaches its FULL kde_max_events cap, drawn only from rows it can use '
+      '(not starved by 950 unrelated-pattern rows competing for a shared budget)',
+      _Xs_both.shape[0] == 10, _Xs_both.shape[0])
+_Xs_col0, _, _, _, _, _ = _clf_waste._kde_subset_for_pattern((True, False), np.array([0]))
+check('a second, disjoint pattern independently reaches its own full cap too (patterns do not starve each other)',
+      _Xs_col0.shape[0] == 10, _Xs_col0.shape[0])
 
 
 print('\n=== adaptive KDE bandwidth: _widened_kernel_values ===')
