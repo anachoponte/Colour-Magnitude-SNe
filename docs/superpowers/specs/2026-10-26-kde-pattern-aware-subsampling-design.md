@@ -113,3 +113,44 @@ backward-compatibility's "bulk" grid points now actually reach
 `alpha > 0.99`, regenerate the boundary figure, re-measure timing (now
 touching a much larger per-pattern pool before each cap, though still
 bounded by `kde_max_events` same as before).
+
+## Validation results (confirmed against real BlueBEAR data, commit `1fe0eb3`)
+
+**This fix is confirmed.** Re-running the real-data validation
+(`results/mc_58818280`) with it in place shows a direct, measurable
+correction of the diagnosed bug:
+
+- Bulk-point local ESS at the default `ess_threshold=10, log_width=0.3`
+  rose from ~2–19 (broken, pre-fix) to **~5–185**. `alpha` at individual
+  bulk points now takes sensible, varied values (e.g. 0.99 at
+  `gr=0.5, peakmag=20`; 0.79 at `gr=1.0, peakmag=21.5`) instead of being
+  uniformly near zero everywhere.
+- Grid-wide backward compatibility: **304/40,000 points now reach
+  `alpha > 0.99`**, up from 0/40,000 (which previously crashed the
+  validation script on an empty-array reduction). The mechanism no longer
+  engages indiscriminately everywhere.
+- Timing overhead is acceptable: 36.8s (blended+widened) vs 17.1s
+  (tree-only) on a 200x200 grid, 2.2x.
+
+**What this fix does NOT resolve, and was never expected to:** the
+bright+red corner's `P(lensed) > 0.9` success criterion (from PR #35's
+original spec) still fails (grid min=0.0002, median=0.0005, max=0.9997).
+At the four corner test points, fixed-bandwidth local ESS is still tiny
+(`ess_sig` 1.18–5.05, `ess_bg` 1.00–1.91) even after this fix -- consistent
+with this investigation's earlier finding that only ~13-15 raw `lensed_Ia`
+events land in that exact box out of 100,000 attempted. This fix recovers
+the *representative* sample for patterns that have one; it cannot
+manufacture real events that were never simulated into an extreme tail.
+
+More notably, sweeping `kde_min_ess` at the corner shows the local density
+estimate *changes sign* once widening sees a real neighbourhood rather
+than the single nearest point: at `kde_min_ess=1` (no widening), two of
+the four corner points give `p_kde≈0.9999` (favouring signal); at
+`kde_min_ess≥5` (real widening engages), the same points drop to
+`p_kde≈0.0006–0.0036` (favouring background). This reads as a genuine
+question about `lensed_Ia`'s Monte Carlo sampling density in this extreme
+magnification/redshift regime relative to its true rate, not a defect in
+this fix or in PR #36's widening mechanism -- tracked separately as
+issue #37 (see that issue for detail). The subsampling fix in this spec is
+considered complete and validated on its own terms; the corner's unmet
+criterion is a separate, open question.

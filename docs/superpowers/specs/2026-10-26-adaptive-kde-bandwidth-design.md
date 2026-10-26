@@ -190,3 +190,28 @@ exist from the first manual-validation pass against `results/mc_58818280`):
 4. Regenerate the boundary figure, visually confirm the bulk is unchanged
    and the corner now shows `P → 1` instead of `P → 0`.
 5. Re-measure timing with widening's added iteration cost included.
+
+## Validation outcome
+
+This plan's own real-data validation ran twice. The first run found a
+separate, more severe bug unrelated to widening itself -- `kde_max_events`
+subsampling wasting its budget on NaN-feature rows before any pattern-
+specific filtering, leaving backward compatibility broken almost
+everywhere, not just in the tail (see
+`docs/superpowers/specs/2026-10-26-kde-pattern-aware-subsampling-design.md`
+for that fix, confirmed and merged in commit `1fe0eb3`).
+
+With that fix in place, re-running this plan's own validation: the
+`ess_threshold`/`log_width` backward-compatibility story is confirmed much
+improved (bulk local ESS and `alpha` now take sensible values; 304/40,000
+grid points reach `alpha > 0.99`, up from 0). The corner's own success
+criterion (**P(lensed) > 0.9**) still does not hold (grid min=0.0002,
+median=0.0005), and the `kde_min_ess` sweep shows the corner's local
+density estimate changes *sign* once real widening engages versus a
+single-point fixed estimate -- read as evidence of genuine `lensed_Ia`
+Monte Carlo sparsity in this exact extreme-magnification regime, not a
+defect in this plan's widening mechanism. Tracked separately as issue #37.
+This plan's own scope (adaptive bandwidth widening, keeping the blend-
+weight decision on the fixed bandwidth) is considered complete and
+correctly implemented; the corner's unmet criterion is now out of this
+plan's scope.
