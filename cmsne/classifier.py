@@ -165,7 +165,8 @@ def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0,
     return g, ess
 
 
-def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAULT_KDE_MIN_ESS):
+def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAULT_KDE_MIN_ESS,
+                          ess_ceiling_sig=None, ess_ceiling_bg=None):
     """Local weighted kernel density ratio and local ESS at point ``x``.
 
     :param Xs, ws: signal training feature matrix and rate weights.
@@ -181,6 +182,14 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
         distance -- is already below ``min_kde_ess``: widening such a class
         would only swallow its whole (small) population regardless of true
         distance from ``x``, destroying locality rather than recovering it.
+    :param ess_ceiling_sig, ess_ceiling_bg: precomputed
+        ``effective_sample_size(ws)``/``effective_sample_size(wb)``, for
+        callers that query the same ``(Xs, ws, Xb, wb)`` repeatedly (e.g.
+        :meth:`ColourClassifier._blend_with_local_density`, once per event)
+        and already have these cached -- they depend only on ``ws``/``wb``,
+        never on ``x``, so recomputing them on every call is wasted work at
+        this project's training-set scale. ``None`` (the default, used by
+        one-off/direct callers) computes them here instead.
     :return: ``(p_kde, local_ess_sig, local_ess_bg)``. ``p_kde`` is ``None``
         when both classes' FIXED-bandwidth kernel-weighted mass underflows
         to (numerically) zero at ``x`` -- the degenerate case callers fall
@@ -204,11 +213,15 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
     # toward it only swallows the class's entire (small) population
     # regardless of true distance, destroying locality rather than
     # recovering it. Use the fixed-bandwidth value unchanged instead.
-    if effective_sample_size(ws) >= min_kde_ess:
+    if ess_ceiling_sig is None:
+        ess_ceiling_sig = effective_sample_size(ws)
+    if ess_ceiling_bg is None:
+        ess_ceiling_bg = effective_sample_size(wb)
+    if ess_ceiling_sig >= min_kde_ess:
         gs, _ = _widened_kernel_values(x, Xs, ws, bandwidths, dims, min_kde_ess)
     else:
         gs = gs_fixed
-    if effective_sample_size(wb) >= min_kde_ess:
+    if ess_ceiling_bg >= min_kde_ess:
         gb, _ = _widened_kernel_values(x, Xb, wb, bandwidths, dims, min_kde_ess)
     else:
         gb = gb_fixed
@@ -409,9 +422,10 @@ class ColourClassifier:
             dims = np.where(np.asarray(pattern))[0]
             if len(dims) == 0:
                 continue
-            Xs_p, ws_p, Xb_p, wb_p = self._kde_subset_for_pattern(pattern, dims)
+            Xs_p, ws_p, Xb_p, wb_p, ceil_sig, ceil_bg = self._kde_subset_for_pattern(pattern, dims)
             p_kde, ess_sig, ess_bg = _local_density_ratio(
-                x, Xs_p, ws_p, Xb_p, wb_p, self._kde_bandwidths, dims, self.kde_min_ess)
+                x, Xs_p, ws_p, Xb_p, wb_p, self._kde_bandwidths, dims, self.kde_min_ess,
+                ess_ceiling_sig=ceil_sig, ess_ceiling_bg=ceil_bg)
             if p_kde is None:
                 continue
             alpha = _blend_weight(ess_sig, ess_bg, self.ess_threshold, self.log_width)
@@ -419,14 +433,23 @@ class ColourClassifier:
         return out
 
     def _kde_subset_for_pattern(self, pattern, dims):
-        """Training rows finite over ``dims``, cached per ``pattern`` on this
-        instance (reset by :meth:`fit`)."""
+        """Training rows finite over ``dims``, plus each class's overall ESS
+        ceiling restricted to that subset, cached per ``pattern`` on this
+        instance (reset by :meth:`fit`). The ceilings depend only on the
+        subset's weights, never on the query point, so caching them here
+        (rather than recomputing in :func:`_local_density_ratio` on every
+        event that shares this pattern) avoids an O(n) pass per event."""
         if pattern not in self._kde_pattern_cache:
+            # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+            from .importance_sampling import effective_sample_size
+
             finite_s = np.all(np.isfinite(self._kde_Xs[:, dims]), axis=1)
             finite_b = np.all(np.isfinite(self._kde_Xb[:, dims]), axis=1)
+            ws_p = self._kde_ws[finite_s]
+            wb_p = self._kde_wb[finite_b]
             self._kde_pattern_cache[pattern] = (
-                self._kde_Xs[finite_s], self._kde_ws[finite_s],
-                self._kde_Xb[finite_b], self._kde_wb[finite_b])
+                self._kde_Xs[finite_s], ws_p, self._kde_Xb[finite_b], wb_p,
+                effective_sample_size(ws_p), effective_sample_size(wb_p))
         return self._kde_pattern_cache[pattern]
 
     def rank(self, events):

@@ -1526,6 +1526,36 @@ check('local_ess_sig/local_ess_bg (the blend-weight inputs) are identical regard
       np.isclose(_ess_bg_check, _fixed_ess_bg_expected),
       (_ess_sig_check, _fixed_ess_sig_expected, _ess_bg_check, _fixed_ess_bg_expected))
 
+print('\n=== adaptive KDE bandwidth: cached ess_ceiling args avoid redundant recomputation ===')
+# ess_ceiling_sig/ess_ceiling_bg must actually be USED when passed, not silently
+# recomputed from ws/wb -- otherwise caching them at the call site (as
+# ColourClassifier._kde_subset_for_pattern now does) would be a no-op.
+# min_kde_ess=10.0 here would normally widen both classes (their real
+# ceilings are well above 10), favouring signal as in the widened check
+# above. Passing explicit ceilings below min_kde_ess must skip widening for
+# both classes instead, reproducing the UNWIDENED (wrong-favouring) result.
+_p_forced_unwidened, _, _ = _local_density_ratio(
+    np.array([0.0]), _bug_Xs, _bug_ws, _bug_Xb, _bug_wb, _bug_h, _bug_dims,
+    min_kde_ess=10.0, ess_ceiling_sig=0.0, ess_ceiling_bg=0.0)
+check('an explicit ess_ceiling below min_kde_ess is honoured (skips widening) even though the '
+      'true ceiling would allow it',
+      _p_forced_unwidened is not None and _p_forced_unwidened < 0.3, _p_forced_unwidened)
+
+_clf_cache = ColourClassifier(keys=['gr'], include_peakmag=False)
+_clf_cache.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
+_pattern_dense = (True,)
+_dims_dense = np.array([0])
+_subset = _clf_cache._kde_subset_for_pattern(_pattern_dense, _dims_dense)
+check('_kde_subset_for_pattern now returns a 6-tuple including the two cached ESS ceilings',
+      len(_subset) == 6, len(_subset))
+_expected_ceil_sig = _ess_ref(_subset[1])
+_expected_ceil_bg = _ess_ref(_subset[3])
+check('_kde_subset_for_pattern caches effective_sample_size(ws_p)/effective_sample_size(wb_p) correctly',
+      np.isclose(_subset[4], _expected_ceil_sig) and np.isclose(_subset[5], _expected_ceil_bg),
+      (_subset[4], _expected_ceil_sig, _subset[5], _expected_ceil_bg))
+check('_kde_subset_for_pattern caches the same tuple object on a repeated call (no recomputation)',
+      _clf_cache._kde_subset_for_pattern(_pattern_dense, _dims_dense) is _subset)
+
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
