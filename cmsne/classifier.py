@@ -42,6 +42,7 @@ DEFAULT_MAGNITUDE_FEATURE = 'peakmag'   # brightest-observed sample across all b
 DEFAULT_ESS_THRESHOLD = 10.0
 DEFAULT_LOG_WIDTH = 0.3
 DEFAULT_KDE_MAX_EVENTS = 4000
+DEFAULT_KDE_MIN_ESS = 10.0
 
 
 def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
@@ -124,24 +125,95 @@ def _kernel_weighted_values(x, X, weights, bandwidths, dims):
     return np.asarray(weights, dtype=float) * k
 
 
-def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims):
-    """Local weighted kernel density ratio and local ESS at point ``x``.
+def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0, max_iter=20):
+    """Kernel-weighted values at ``x``, with the kernel's bandwidth
+    isotropically widened (by ``growth`` per iteration, up to ``max_iter``
+    times) until the resulting local ESS reaches ``min_ess``, or until
+    widening stops helping (plateaus at this class's own overall ESS
+    ceiling) -- whichever comes first.
 
-    :param Xs, ws: signal training feature matrix and rate weights.
-    :param Xb, wb: background training feature matrix and rate weights.
-    :return: ``(p_kde, local_ess_sig, local_ess_bg)``. ``p_kde`` is ``None``
-        when both classes' kernel-weighted mass underflows to (numerically)
-        zero at ``x`` -- the degenerate case callers fall back to the
-        tree-only posterior for.
+    This exists ONLY to make the KDE side's own ``S``/``B`` sums
+    statistically meaningful in genuinely data-starved regions, where a
+    fixed bandwidth's local ESS can be dominated by a single surviving
+    training point (see docs/superpowers/specs/
+    2026-10-26-adaptive-kde-bandwidth-design.md). It is NOT used for the
+    tree-vs-KDE blend-weight decision, which stays on the fixed-bandwidth
+    ESS computed separately in :func:`_local_density_ratio`.
+
+    :return: ``(g, ess)`` -- the kernel-weighted values and the local ESS
+        at whichever scale the widening stopped at.
     """
     # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
     from .importance_sampling import effective_sample_size
 
-    gs = _kernel_weighted_values(x, Xs, ws, bandwidths, dims)
-    gb = _kernel_weighted_values(x, Xb, wb, bandwidths, dims)
+    scale = 1.0
+    g = _kernel_weighted_values(x, X, weights, bandwidths, dims)
+    ess = effective_sample_size(g)
+    if ess >= min_ess:
+        return g, ess
+    ceiling = effective_sample_size(weights)
+    for _ in range(max_iter):
+        if ess >= min_ess or ess >= ceiling - 1e-9:
+            break
+        scale *= growth
+        g_new = _kernel_weighted_values(x, X, weights, bandwidths * scale, dims)
+        ess_new = effective_sample_size(g_new)
+        if ess_new <= ess:
+            ess = ess_new
+            break
+        g, ess = g_new, ess_new
+    return g, ess
+
+
+def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAULT_KDE_MIN_ESS):
+    """Local weighted kernel density ratio and local ESS at point ``x``.
+
+    :param Xs, ws: signal training feature matrix and rate weights.
+    :param Xb, wb: background training feature matrix and rate weights.
+    :param min_kde_ess: minimum effective sample size each class's kernel is
+        adaptively widened to reach before computing the density ratio (see
+        :func:`_widened_kernel_values`). This does NOT affect
+        ``local_ess_sig``/``local_ess_bg`` below, which stay at the fixed
+        bandwidth and drive the tree-vs-KDE blend-weight decision. A class
+        is skipped from widening entirely (its fixed-bandwidth value is used
+        for ``p_kde`` unchanged) when that class's own overall ESS ceiling
+        -- ``effective_sample_size`` of its raw training weights, ignoring
+        distance -- is already below ``min_kde_ess``: widening such a class
+        would only swallow its whole (small) population regardless of true
+        distance from ``x``, destroying locality rather than recovering it.
+    :return: ``(p_kde, local_ess_sig, local_ess_bg)``. ``p_kde`` is ``None``
+        when both classes' FIXED-bandwidth kernel-weighted mass underflows
+        to (numerically) zero at ``x`` -- the degenerate case callers fall
+        back to the tree-only posterior for. This guard is checked before
+        any widening is attempted, so a point with no real local
+        information from either class is never "rescued" into a
+        near-arbitrary ratio by widening far enough to reach unrelated data.
+    """
+    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+    from .importance_sampling import effective_sample_size
+
+    gs_fixed = _kernel_weighted_values(x, Xs, ws, bandwidths, dims)
+    gb_fixed = _kernel_weighted_values(x, Xb, wb, bandwidths, dims)
+    local_ess_sig = effective_sample_size(gs_fixed)
+    local_ess_bg = effective_sample_size(gb_fixed)
+    if float(np.sum(gs_fixed)) + float(np.sum(gb_fixed)) < 1e-300:
+        return None, local_ess_sig, local_ess_bg
+
+    # Only widen a class if doing so can plausibly reach min_kde_ess -- if a
+    # class's own overall ESS ceiling is already below that target, widening
+    # toward it only swallows the class's entire (small) population
+    # regardless of true distance, destroying locality rather than
+    # recovering it. Use the fixed-bandwidth value unchanged instead.
+    if effective_sample_size(ws) >= min_kde_ess:
+        gs, _ = _widened_kernel_values(x, Xs, ws, bandwidths, dims, min_kde_ess)
+    else:
+        gs = gs_fixed
+    if effective_sample_size(wb) >= min_kde_ess:
+        gb, _ = _widened_kernel_values(x, Xb, wb, bandwidths, dims, min_kde_ess)
+    else:
+        gb = gb_fixed
+
     S, B = float(np.sum(gs)), float(np.sum(gb))
-    local_ess_sig = effective_sample_size(gs)
-    local_ess_bg = effective_sample_size(gb)
     if S + B < 1e-300:
         return None, local_ess_sig, local_ess_bg
     return S / (S + B), local_ess_sig, local_ess_bg
@@ -216,7 +288,7 @@ class ColourClassifier:
                  magnitude_feature=DEFAULT_MAGNITUDE_FEATURE, target_fpr=0.10,
                  calibrate=True, ess_threshold=DEFAULT_ESS_THRESHOLD,
                  log_width=DEFAULT_LOG_WIDTH, kde_max_events=DEFAULT_KDE_MAX_EVENTS,
-                 **hgb):
+                 kde_min_ess=DEFAULT_KDE_MIN_ESS, **hgb):
         self.keys = list(keys)
         if include_peakmag and magnitude_feature:
             if magnitude_feature not in MAGNITUDE_FEATURES:
@@ -235,6 +307,7 @@ class ColourClassifier:
         self.ess_threshold = ess_threshold
         self.log_width = log_width
         self.kde_max_events = kde_max_events
+        self.kde_min_ess = kde_min_ess
 
     def fit(self, signal_events, background_events,
             signal_weights=None, background_weights=None):
@@ -338,7 +411,7 @@ class ColourClassifier:
                 continue
             Xs_p, ws_p, Xb_p, wb_p = self._kde_subset_for_pattern(pattern, dims)
             p_kde, ess_sig, ess_bg = _local_density_ratio(
-                x, Xs_p, ws_p, Xb_p, wb_p, self._kde_bandwidths, dims)
+                x, Xs_p, ws_p, Xb_p, wb_p, self._kde_bandwidths, dims, self.kde_min_ess)
             if p_kde is None:
                 continue
             alpha = _blend_weight(ess_sig, ess_bg, self.ess_threshold, self.log_width)
