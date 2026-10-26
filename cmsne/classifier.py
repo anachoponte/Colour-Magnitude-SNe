@@ -15,6 +15,8 @@ feature keys you have. Multi-colour events (:class:`cmsne.multicolour`) expose
 expose ``lensed_colour`` and ``band_1_mag_l``.
 """
 
+from typing import NamedTuple
+
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.calibration import CalibratedClassifierCV
@@ -203,7 +205,8 @@ def _grouped_effective_sample_size(g, event_id, n_original):
     return effective_sample_size(g_grouped)
 
 
-def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0, max_iter=20):
+def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0, max_iter=20,
+                            event_id=None, n_original=None):
     """Kernel-weighted values at ``x``, with the kernel's bandwidth
     isotropically widened (by ``growth`` per iteration, up to ``max_iter``
     times) until the resulting local ESS reaches ``min_ess``, or until
@@ -218,24 +221,35 @@ def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0,
     tree-vs-KDE blend-weight decision, which stays on the fixed-bandwidth
     ESS computed separately in :func:`_local_density_ratio`.
 
+    :param event_id, n_original: if ``X``/``weights`` hold noise-injection
+        replicas of the same original training events (see
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md),
+        pass the replica-to-original mapping here so ESS is computed on
+        each original event's GROUPED contribution, not per replica --
+        otherwise ``n_replicates`` copies of one real point would look
+        like ``n_replicates`` independent points. ``None`` (the default,
+        used by every pre-existing direct caller) means no replication is
+        in play: a trivial, non-grouping mapping is used.
     :return: ``(g, ess)`` -- the kernel-weighted values and the local ESS
         at whichever scale the widening stopped at.
     """
-    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
-    from .importance_sampling import effective_sample_size
+    if event_id is None:
+        event_id = np.arange(len(weights))
+    if n_original is None:
+        n_original = len(weights)
 
     scale = 1.0
     g = _kernel_weighted_values(x, X, weights, bandwidths, dims)
-    ess = effective_sample_size(g)
+    ess = _grouped_effective_sample_size(g, event_id, n_original)
     if ess >= min_ess:
         return g, ess
-    ceiling = effective_sample_size(weights)
+    ceiling = _grouped_effective_sample_size(weights, event_id, n_original)
     for _ in range(max_iter):
         if ess >= min_ess or ess >= ceiling - 1e-9:
             break
         scale *= growth
         g_new = _kernel_weighted_values(x, X, weights, bandwidths * scale, dims)
-        ess_new = effective_sample_size(g_new)
+        ess_new = _grouped_effective_sample_size(g_new, event_id, n_original)
         if ess_new <= ess:
             ess = ess_new
             break
@@ -244,11 +258,14 @@ def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0,
 
 
 def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAULT_KDE_MIN_ESS,
-                          ess_ceiling_sig=None, ess_ceiling_bg=None):
+                          ess_ceiling_sig=None, ess_ceiling_bg=None,
+                          event_id_s=None, event_id_b=None, n_orig_s=None, n_orig_b=None):
     """Local weighted kernel density ratio and local ESS at point ``x``.
 
-    :param Xs, ws: signal training feature matrix and rate weights.
-    :param Xb, wb: background training feature matrix and rate weights.
+    :param Xs, ws: signal training feature matrix and rate weights -- may
+        hold noise-injection replicas of fewer original events (see
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+    :param Xb, wb: background training feature matrix and rate weights, same caveat.
     :param min_kde_ess: minimum effective sample size each class's kernel is
         adaptively widened to reach before computing the density ratio (see
         :func:`_widened_kernel_values`). This does NOT affect
@@ -268,6 +285,10 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
         never on ``x``, so recomputing them on every call is wasted work at
         this project's training-set scale. ``None`` (the default, used by
         one-off/direct callers) computes them here instead.
+    :param event_id_s, event_id_b, n_orig_s, n_orig_b: replica-to-original
+        mapping for ``Xs``/``Xb`` respectively (see
+        :func:`_widened_kernel_values`). ``None`` (the default, used by
+        every pre-existing direct caller) means no replication is in play.
     :return: ``(p_kde, local_ess_sig, local_ess_bg)``. ``p_kde`` is ``None``
         when both classes' FIXED-bandwidth kernel-weighted mass underflows
         to (numerically) zero at ``x`` -- the degenerate case callers fall
@@ -276,13 +297,19 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
         information from either class is never "rescued" into a
         near-arbitrary ratio by widening far enough to reach unrelated data.
     """
-    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
-    from .importance_sampling import effective_sample_size
+    if event_id_s is None:
+        event_id_s = np.arange(len(ws))
+    if n_orig_s is None:
+        n_orig_s = len(ws)
+    if event_id_b is None:
+        event_id_b = np.arange(len(wb))
+    if n_orig_b is None:
+        n_orig_b = len(wb)
 
     gs_fixed = _kernel_weighted_values(x, Xs, ws, bandwidths, dims)
     gb_fixed = _kernel_weighted_values(x, Xb, wb, bandwidths, dims)
-    local_ess_sig = effective_sample_size(gs_fixed)
-    local_ess_bg = effective_sample_size(gb_fixed)
+    local_ess_sig = _grouped_effective_sample_size(gs_fixed, event_id_s, n_orig_s)
+    local_ess_bg = _grouped_effective_sample_size(gb_fixed, event_id_b, n_orig_b)
     if float(np.sum(gs_fixed)) + float(np.sum(gb_fixed)) < 1e-300:
         return None, local_ess_sig, local_ess_bg
 
@@ -292,15 +319,17 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
     # regardless of true distance, destroying locality rather than
     # recovering it. Use the fixed-bandwidth value unchanged instead.
     if ess_ceiling_sig is None:
-        ess_ceiling_sig = effective_sample_size(ws)
+        ess_ceiling_sig = _grouped_effective_sample_size(ws, event_id_s, n_orig_s)
     if ess_ceiling_bg is None:
-        ess_ceiling_bg = effective_sample_size(wb)
+        ess_ceiling_bg = _grouped_effective_sample_size(wb, event_id_b, n_orig_b)
     if ess_ceiling_sig >= min_kde_ess:
-        gs, _ = _widened_kernel_values(x, Xs, ws, bandwidths, dims, min_kde_ess)
+        gs, _ = _widened_kernel_values(x, Xs, ws, bandwidths, dims, min_kde_ess,
+                                        event_id=event_id_s, n_original=n_orig_s)
     else:
         gs = gs_fixed
     if ess_ceiling_bg >= min_kde_ess:
-        gb, _ = _widened_kernel_values(x, Xb, wb, bandwidths, dims, min_kde_ess)
+        gb, _ = _widened_kernel_values(x, Xb, wb, bandwidths, dims, min_kde_ess,
+                                        event_id=event_id_b, n_original=n_orig_b)
     else:
         gb = gb_fixed
 
@@ -339,20 +368,47 @@ def _weighted_subsample(X, weights, max_events, seed=0):
     since this becomes the KDE's own reference set, where duplicate points
     would distort local density estimates.
 
-    :return: ``(X_sub, weights_sub)``. If there are ``max_events`` or fewer
+    :return: ``(X_sub, weights_sub, chosen)``. ``chosen`` indexes into the
+        INPUT ``X``/``weights`` -- needed by callers that must align another
+        per-row array (e.g. per-event measurement-uncertainty sigma, see
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md)
+        with the same kept subsample. If there are ``max_events`` or fewer
         positive-weight rows, returns all of them (no subsampling), with
         weights unchanged.
     """
     weights = np.asarray(weights, dtype=float)
     positive = np.where(weights > 0)[0]
     if len(positive) <= max_events:
-        return X[positive], weights[positive]
+        return X[positive], weights[positive], positive
     wsum = weights[positive].sum()
     p = weights[positive] / wsum
     rng = np.random.default_rng(seed)
     chosen = rng.choice(positive, size=max_events, replace=False, p=p)
     kept_w = weights[chosen] * (wsum / weights[chosen].sum())
-    return X[chosen], kept_w
+    return X[chosen], kept_w, chosen
+
+
+class _KDEPatternSubset(NamedTuple):
+    """Per-pattern KDE reference set, cached by
+    :meth:`ColourClassifier._kde_subset_for_pattern`. ``Xs``/``ws``/``Xb``/``wb``
+    are the noise-injection-REPLICATED subset (see
+    docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md);
+    ``event_id_s``/``event_id_b`` map each replica back to its original
+    (capped, pre-replication) row, and ``n_orig_s``/``n_orig_b`` are how many
+    original rows that was -- both needed by
+    :func:`_grouped_effective_sample_size`. ``ess_ceiling_sig``/``ess_ceiling_bg``
+    are computed from the CAPPED, PRE-replication weights, not ``ws``/``wb``.
+    """
+    Xs: np.ndarray
+    ws: np.ndarray
+    Xb: np.ndarray
+    wb: np.ndarray
+    ess_ceiling_sig: float
+    ess_ceiling_bg: float
+    event_id_s: np.ndarray
+    event_id_b: np.ndarray
+    n_orig_s: int
+    n_orig_b: int
 
 
 class ColourClassifier:
@@ -458,11 +514,14 @@ class ColourClassifier:
         return self
 
     def _store_kde_training_data(self, Xs, ws, Xb, wb, sigma_s, sigma_b):
-        """Retain the full (positive-weight) training events/weights +
+        """Retain the full (positive-weight) training events/weights/sigma +
         bandwidths for the local density-ratio blend in :meth:`probability`,
         and reset the per-pattern cache. ``ws``/``wb`` must already be the
         *balanced* weights computed earlier in :meth:`fit`, matching
-        ``p_tree``'s own balanced-training-prior convention.
+        ``p_tree``'s own balanced-training-prior convention. ``sigma_s``/
+        ``sigma_b`` are per-event measurement-uncertainty matrices, same row
+        order and column order as ``Xs``/``Xb`` (see
+        :func:`colour_feature_sigma_matrix`).
 
         ``kde_max_events`` subsampling does NOT happen here -- it happens
         lazily, per missing-data pattern, in :meth:`_kde_subset_for_pattern`.
@@ -476,12 +535,20 @@ class ColourClassifier:
         available. Filtering first, then capping per pattern, spends the
         budget only on rows that pattern can use. See docs/superpowers/
         specs/2026-10-26-kde-pattern-aware-subsampling-design.md.
+
+        Noise-injection replication for the KDE also does NOT happen here --
+        it happens lazily, per pattern, in :meth:`_kde_subset_for_pattern`,
+        AFTER that pattern's own kde_max_events cap, for the same reason: a
+        cap applied before replication would be spent on redundant copies of
+        the same few original events instead of genuinely diverse ones. See
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md.
         """
         pos_s = ws > 0
         pos_b = wb > 0
-        self._kde_sigma_s_unfiltered, self._kde_sigma_b_unfiltered = sigma_s, sigma_b
         self._kde_Xs, self._kde_ws = Xs[pos_s], ws[pos_s]
+        self._kde_sigma_s = sigma_s[pos_s]
         self._kde_Xb, self._kde_wb = Xb[pos_b], wb[pos_b]
+        self._kde_sigma_b = sigma_b[pos_b]
         pooled_X = np.vstack([self._kde_Xs, self._kde_Xb])
         pooled_w = np.r_[self._kde_ws, self._kde_wb]
         self._kde_bandwidths = _scott_bandwidths(pooled_X, pooled_w)
@@ -542,8 +609,17 @@ class ColourClassifier:
         Falls back to ``p_tree`` unchanged wherever the KDE side is
         degenerate (no nearby training data of either class, or no finite
         feature columns for that event).
+
+        Each query event is ALSO noise-injection-replicated from its own
+        ``*_err`` fields (if present), and the blended result is averaged
+        back over those replicas -- symmetric with how training data is
+        handled (see docs/superpowers/specs/
+        2026-10-26-uncertainty-aware-noise-injection-design.md). ``p_tree``
+        arrives already averaged over its own replicas (see
+        :meth:`score`); only the KDE-side evaluation is repeated here.
         """
         X, _ = colour_feature_matrix(events, self.keys, self.extra)
+        sigma = colour_feature_sigma_matrix(events, self.keys, self.extra)
         out = np.array(p_tree, dtype=float, copy=True)
         for i in range(len(events)):
             x = X[i]
@@ -551,33 +627,43 @@ class ColourClassifier:
             dims = np.where(np.asarray(pattern))[0]
             if len(dims) == 0:
                 continue
-            Xs_p, ws_p, Xb_p, wb_p, ceil_sig, ceil_bg = self._kde_subset_for_pattern(pattern, dims)
-            p_kde, ess_sig, ess_bg = _local_density_ratio(
-                x, Xs_p, ws_p, Xb_p, wb_p, self._kde_bandwidths, dims, self.kde_min_ess,
-                ess_ceiling_sig=ceil_sig, ess_ceiling_bg=ceil_bg)
-            if p_kde is None:
-                continue
-            alpha = _blend_weight(ess_sig, ess_bg, self.ess_threshold, self.log_width)
-            out[i] = alpha * p_tree[i] + (1 - alpha) * p_kde
+            subset = self._kde_subset_for_pattern(pattern, dims)
+            x_rep, _, _ = _replicate_with_uncertainty(
+                x[np.newaxis, :], sigma[i][np.newaxis, :], np.array([1.0]),
+                dims, self.n_uncertainty_replicates)
+            blended_vals = []
+            for xr in x_rep:
+                p_kde, ess_sig, ess_bg = _local_density_ratio(
+                    xr, subset.Xs, subset.ws, subset.Xb, subset.wb, self._kde_bandwidths, dims,
+                    self.kde_min_ess, ess_ceiling_sig=subset.ess_ceiling_sig,
+                    ess_ceiling_bg=subset.ess_ceiling_bg, event_id_s=subset.event_id_s,
+                    event_id_b=subset.event_id_b, n_orig_s=subset.n_orig_s, n_orig_b=subset.n_orig_b)
+                if p_kde is None:
+                    continue
+                alpha = _blend_weight(ess_sig, ess_bg, self.ess_threshold, self.log_width)
+                blended_vals.append(alpha * p_tree[i] + (1 - alpha) * p_kde)
+            if blended_vals:
+                out[i] = float(np.mean(blended_vals))
         return out
 
     def _kde_subset_for_pattern(self, pattern, dims):
         """Training rows finite over ``dims``, weighted-subsampled to at
-        most ``kde_max_events`` (independently per class), plus each
-        resulting subset's ESS ceiling -- cached per ``pattern`` on this
-        instance (reset by :meth:`fit`).
+        most ``kde_max_events`` (independently per class), then
+        noise-injection-replicated from each surviving event's own
+        measurement uncertainty -- cached per ``pattern`` on this instance
+        (reset by :meth:`fit`) as a :class:`_KDEPatternSubset`.
 
         Subsampling happens HERE, after the finite-row filter, not in
         :meth:`_store_kde_training_data` -- so the ``kde_max_events`` budget
-        is spent only on rows this specific pattern can actually use. Each
-        distinct pattern gets its own independent cap, rather than all
-        patterns competing for one global cap drawn before anyone knows
-        which rows which pattern needs (see docs/superpowers/specs/
-        2026-10-26-kde-pattern-aware-subsampling-design.md for why this
-        matters on real data). The ceilings depend only on the resulting
-        subset's weights, never on the query point, so caching them here
-        (rather than recomputing in :func:`_local_density_ratio` on every
-        event that shares this pattern) avoids an O(n) pass per event.
+        is spent only on rows this specific pattern can actually use (see
+        docs/superpowers/specs/2026-10-26-kde-pattern-aware-subsampling-design.md).
+        Replication ALSO happens here, AFTER that cap -- replicating before
+        capping would spend the budget on redundant copies of a few original
+        events instead of genuinely diverse ones (see docs/superpowers/specs/
+        2026-10-26-uncertainty-aware-noise-injection-design.md). The ESS
+        ceilings are computed from the CAPPED, PRE-replication weights --
+        replicating a point into K pieces must not make its own class look
+        like it has K times more statistical support.
         """
         if pattern not in self._kde_pattern_cache:
             # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
@@ -585,13 +671,24 @@ class ColourClassifier:
 
             finite_s = np.all(np.isfinite(self._kde_Xs[:, dims]), axis=1)
             finite_b = np.all(np.isfinite(self._kde_Xb[:, dims]), axis=1)
-            Xs_p, ws_p = _weighted_subsample(
+            finite_s_idx = np.where(finite_s)[0]
+            finite_b_idx = np.where(finite_b)[0]
+            Xs_cap, ws_cap, chosen_s = _weighted_subsample(
                 self._kde_Xs[finite_s], self._kde_ws[finite_s], self.kde_max_events)
-            Xb_p, wb_p = _weighted_subsample(
+            Xb_cap, wb_cap, chosen_b = _weighted_subsample(
                 self._kde_Xb[finite_b], self._kde_wb[finite_b], self.kde_max_events)
-            self._kde_pattern_cache[pattern] = (
-                Xs_p, ws_p, Xb_p, wb_p,
-                effective_sample_size(ws_p), effective_sample_size(wb_p))
+            sigma_s_cap = self._kde_sigma_s[finite_s_idx[chosen_s]]
+            sigma_b_cap = self._kde_sigma_b[finite_b_idx[chosen_b]]
+
+            Xs_rep, ws_rep, event_id_s = _replicate_with_uncertainty(
+                Xs_cap, sigma_s_cap, ws_cap, dims, self.n_uncertainty_replicates)
+            Xb_rep, wb_rep, event_id_b = _replicate_with_uncertainty(
+                Xb_cap, sigma_b_cap, wb_cap, dims, self.n_uncertainty_replicates)
+
+            self._kde_pattern_cache[pattern] = _KDEPatternSubset(
+                Xs_rep, ws_rep, Xb_rep, wb_rep,
+                effective_sample_size(ws_cap), effective_sample_size(wb_cap),
+                event_id_s, event_id_b, len(Xs_cap), len(Xb_cap))
         return self._kde_pattern_cache[pattern]
 
     def rank(self, events):

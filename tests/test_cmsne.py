@@ -1556,19 +1556,19 @@ _clf_cap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=5
 _clf_cap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
 check('_kde_Xs now stores the full positive-weight population, unaffected by kde_max_events',
       _clf_cap._kde_Xs.shape[0] == np.sum(_cap_weights > 0), _clf_cap._kde_Xs.shape[0])
-_Xs_capped, _ws_capped, _, _, _, _ = _clf_cap._kde_subset_for_pattern((True,), np.array([0]))
+_subset_capped = _clf_cap._kde_subset_for_pattern((True,), np.array([0]))
 check('kde_max_events caps the PER-PATTERN subsample (via _kde_subset_for_pattern) to at most the cap',
-      _Xs_capped.shape[0] <= 50, _Xs_capped.shape[0])
+      _subset_capped.Xs.shape[0] <= 50, _subset_capped.Xs.shape[0])
 check('kde_max_events preserves total rate mass after per-pattern subsampling (within 1%)',
-      abs(_ws_capped.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
-      (_ws_capped.sum(), _cap_weights.sum()))
+      abs(_subset_capped.ws.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
+      (_subset_capped.ws.sum(), _cap_weights.sum()))
 
 # Below the cap: no subsampling, nothing changes at the pattern level either.
 _clf_nocap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=10000)
 _clf_nocap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
-_Xs_nocap, _, _, _, _, _ = _clf_nocap._kde_subset_for_pattern((True,), np.array([0]))
+_subset_nocap = _clf_nocap._kde_subset_for_pattern((True,), np.array([0]))
 check('kde_max_events above the actual event count leaves the per-pattern subset untouched',
-      _Xs_nocap.shape[0] == np.sum(_cap_weights > 0), _Xs_nocap.shape[0])
+      _subset_nocap.Xs.shape[0] == np.sum(_cap_weights > 0), _subset_nocap.Xs.shape[0])
 
 print('\n=== KDE pattern-aware subsampling: budget is not wasted on rows a pattern cannot use ===')
 # Mimics the real bug at small scale: 950/1000 rows are missing column 1
@@ -1593,13 +1593,13 @@ _sigma_waste = np.full_like(_Xs_waste, np.nan)  # no uncertainty data -- isolate
 _clf_waste._store_kde_training_data(_Xs_waste, _ws_waste, _Xs_waste, _ws_waste, _sigma_waste, _sigma_waste)
 check('_store_kde_training_data retains the FULL population (no global subsampling)',
       _clf_waste._kde_Xs.shape[0] == _n_both + _n_col0_only, _clf_waste._kde_Xs.shape[0])
-_Xs_both, _, _, _, _, _ = _clf_waste._kde_subset_for_pattern((True, True), np.array([0, 1]))
+_subset_both = _clf_waste._kde_subset_for_pattern((True, True), np.array([0, 1]))
 check('the all-finite pattern reaches its FULL kde_max_events cap, drawn only from rows it can use '
       '(not starved by 950 unrelated-pattern rows competing for a shared budget)',
-      _Xs_both.shape[0] == 10, _Xs_both.shape[0])
-_Xs_col0, _, _, _, _, _ = _clf_waste._kde_subset_for_pattern((True, False), np.array([0]))
+      _subset_both.Xs.shape[0] == 10, _subset_both.Xs.shape[0])
+_subset_col0 = _clf_waste._kde_subset_for_pattern((True, False), np.array([0]))
 check('a second, disjoint pattern independently reaches its own full cap too (patterns do not starve each other)',
-      _Xs_col0.shape[0] == 10, _Xs_col0.shape[0])
+      _subset_col0.Xs.shape[0] == 10, _subset_col0.Xs.shape[0])
 
 
 print('\n=== adaptive KDE bandwidth: _widened_kernel_values ===')
@@ -1696,15 +1696,67 @@ _clf_cache.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
 _pattern_dense = (True,)
 _dims_dense = np.array([0])
 _subset = _clf_cache._kde_subset_for_pattern(_pattern_dense, _dims_dense)
-check('_kde_subset_for_pattern now returns a 6-tuple including the two cached ESS ceilings',
-      len(_subset) == 6, len(_subset))
-_expected_ceil_sig = _ess_ref(_subset[1])
-_expected_ceil_bg = _ess_ref(_subset[3])
-check('_kde_subset_for_pattern caches effective_sample_size(ws_p)/effective_sample_size(wb_p) correctly',
-      np.isclose(_subset[4], _expected_ceil_sig) and np.isclose(_subset[5], _expected_ceil_bg),
-      (_subset[4], _expected_ceil_sig, _subset[5], _expected_ceil_bg))
-check('_kde_subset_for_pattern caches the same tuple object on a repeated call (no recomputation)',
+check('_kde_subset_for_pattern now returns a _KDEPatternSubset with 10 fields '
+      '(Xs, ws, Xb, wb, ess_ceiling_sig, ess_ceiling_bg, event_id_s, event_id_b, n_orig_s, n_orig_b)',
+      len(_subset) == 10, len(_subset))
+_expected_ceil_sig = _ess_ref(_subset.ws)
+_expected_ceil_bg = _ess_ref(_subset.wb)
+check('_kde_subset_for_pattern caches effective_sample_size(ws)/effective_sample_size(wb) correctly '
+      '(no uncertainty data here, so ws/wb are unreplicated and this matches directly)',
+      np.isclose(_subset.ess_ceiling_sig, _expected_ceil_sig) and
+      np.isclose(_subset.ess_ceiling_bg, _expected_ceil_bg),
+      (_subset.ess_ceiling_sig, _expected_ceil_sig, _subset.ess_ceiling_bg, _expected_ceil_bg))
+check('_kde_subset_for_pattern caches the same object on a repeated call (no recomputation)',
       _clf_cache._kde_subset_for_pattern(_pattern_dense, _dims_dense) is _subset)
+
+print('\n=== uncertainty-aware noise injection: KDE-side wiring ===')
+# Grouped-ESS integration: _widened_kernel_values and _local_density_ratio must
+# not be fooled by replicas of one real point, end to end (not just via the
+# standalone _grouped_effective_sample_size helper tested in Task 2).
+_gi_h = np.array([1.0])
+_gi_dims = np.array([0])
+_gi_X_one_point_x5 = np.array([[3.0], [3.0], [3.0], [3.0], [3.0]])  # 5 "replicas" of ONE real point
+_gi_w_one_point_x5 = np.full(5, 1e-5 / 5)                           # each at weight/5
+_gi_event_id = np.array([0, 0, 0, 0, 0])
+_gi_g_ungrouped = _kernel_weighted_values(np.array([0.0]), _gi_X_one_point_x5, _gi_w_one_point_x5, _gi_h, _gi_dims)
+check('WITHOUT the event_id/n_original fix, 5 replicas of one point look like ESS~5',
+      _ess_ref(_gi_g_ungrouped) > 4.0, _ess_ref(_gi_g_ungrouped))
+_, _gi_ess_grouped = _widened_kernel_values(
+    np.array([0.0]), _gi_X_one_point_x5, _gi_w_one_point_x5, _gi_h, _gi_dims, min_ess=10.0,
+    event_id=_gi_event_id, n_original=1)
+check('_widened_kernel_values with event_id/n_original correctly reports ESS~1 for the same 5 replicas',
+      _gi_ess_grouped < 1.5, _gi_ess_grouped)
+
+# Issue #37 smoking-gun reproduction, at the _local_density_ratio level (the
+# same style as PR #36's own bug-reproduction test, _bug_Xs/_bug_ws above):
+# one background point sitting RIGHT AT the query with a large, unmodelled
+# uncertainty (mirrors the real gr=6.16 event -- a near-detection-limit
+# colour) single-handedly dominates the density estimate WITHOUT noise
+# injection, exactly as observed on real data, and is correctly smeared back
+# down WITH it. Signal sits far enough away (3 bandwidths) that its 20 points
+# don't outweigh background's single exact-match point until that point's own
+# uncertainty is taken into account.
+_sg_h = np.array([1.0])
+_sg_dims = np.array([0])
+_sg_Xs = np.array([[3.0]] * 20)       # signal: 20 points, each 3 bandwidths from the query
+_sg_ws = np.full(20, 1e-5)
+_sg_Xb = np.array([[0.0]])            # background: ONE point exactly at the query
+_sg_wb = np.array([1e-5])
+_sg_sigma_b = np.array([[5.0]])       # ...with a large, unmodelled measurement uncertainty
+
+_p_sg_noinj, _, _ = _local_density_ratio(np.array([0.0]), _sg_Xs, _sg_ws, _sg_Xb, _sg_wb, _sg_h, _sg_dims)
+check('WITHOUT noise injection, the single exact-match high-uncertainty background point '
+      'dominates the query, as observed in the real issue #37 finding',
+      _p_sg_noinj is not None and _p_sg_noinj < 0.3, _p_sg_noinj)
+
+_sg_Xb_rep, _sg_wb_rep, _sg_event_id_b = _replicate_with_uncertainty(
+    _sg_Xb, _sg_sigma_b, _sg_wb, _sg_dims, n_replicates=500, seed=3)
+_p_sg_inj, _, _ = _local_density_ratio(
+    np.array([0.0]), _sg_Xs, _sg_ws, _sg_Xb_rep, _sg_wb_rep, _sg_h, _sg_dims,
+    event_id_b=_sg_event_id_b, n_orig_b=1)
+check('WITH noise injection, that point\'s own large uncertainty smears its contribution and '
+      'the probability moves back toward the confident signal population',
+      _p_sg_inj is not None and _p_sg_inj > _p_sg_noinj, (_p_sg_noinj, _p_sg_inj))
 
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
