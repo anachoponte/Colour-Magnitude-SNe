@@ -1491,6 +1491,41 @@ _g_c, _ess_c = _widened_kernel_values(
 check('_widened_kernel_values stops at the class ceiling rather than looping uselessly to max_iter',
       np.isclose(_ess_c, _ceiling, atol=1e-3), (_ess_c, _ceiling))
 
+print('\n=== adaptive KDE bandwidth: reproduces and fixes the real corner bug ===')
+from cmsne.classifier import _local_density_ratio
+
+# Mimics the real bright+red corner failure: each class has one dominant
+# near point at the fixed bandwidth (local ESS~1 for both), but background's
+# near point carries more weight at a slightly closer distance -- so the
+# UNWIDENED ratio wrongly favours background. Each class also has a larger,
+# farther-out population that should correctly swing the ratio toward
+# signal once the kernel widens enough to actually see it.
+_bug_h = np.array([1.0])
+_bug_dims = np.array([0])
+_bug_Xs = np.array([[3.0]] + [[6.0]] * 30)
+_bug_ws = np.full(31, 1e-5)
+_bug_Xb = np.array([[2.9]] + [[30.0]] * 30)
+_bug_wb = np.array([5e-5] + [1e-5] * 30)
+
+_p_unwidened, _, _ = _local_density_ratio(
+    np.array([0.0]), _bug_Xs, _bug_ws, _bug_Xb, _bug_wb, _bug_h, _bug_dims, min_kde_ess=1.0)
+check('without meaningful widening, the corner-mimicking scenario wrongly favours background',
+      _p_unwidened is not None and _p_unwidened < 0.3, _p_unwidened)
+
+_p_widened, _ess_sig_check, _ess_bg_check = _local_density_ratio(
+    np.array([0.0]), _bug_Xs, _bug_ws, _bug_Xb, _bug_wb, _bug_h, _bug_dims, min_kde_ess=10.0)
+check('with adaptive widening (min_kde_ess=10), the same scenario correctly favours signal',
+      _p_widened is not None and _p_widened > 0.5, _p_widened)
+
+_fixed_ess_sig_expected = _ess_ref(_kernel_weighted_values(
+    np.array([0.0]), _bug_Xs, _bug_ws, _bug_h, _bug_dims))
+_fixed_ess_bg_expected = _ess_ref(_kernel_weighted_values(
+    np.array([0.0]), _bug_Xb, _bug_wb, _bug_h, _bug_dims))
+check('local_ess_sig/local_ess_bg (the blend-weight inputs) are identical regardless of min_kde_ess',
+      np.isclose(_ess_sig_check, _fixed_ess_sig_expected) and
+      np.isclose(_ess_bg_check, _fixed_ess_bg_expected),
+      (_ess_sig_check, _fixed_ess_sig_expected, _ess_bg_check, _fixed_ess_bg_expected))
+
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
