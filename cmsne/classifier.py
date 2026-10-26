@@ -174,7 +174,13 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
         adaptively widened to reach before computing the density ratio (see
         :func:`_widened_kernel_values`). This does NOT affect
         ``local_ess_sig``/``local_ess_bg`` below, which stay at the fixed
-        bandwidth and drive the tree-vs-KDE blend-weight decision.
+        bandwidth and drive the tree-vs-KDE blend-weight decision. A class
+        is skipped from widening entirely (its fixed-bandwidth value is used
+        for ``p_kde`` unchanged) when that class's own overall ESS ceiling
+        -- ``effective_sample_size`` of its raw training weights, ignoring
+        distance -- is already below ``min_kde_ess``: widening such a class
+        would only swallow its whole (small) population regardless of true
+        distance from ``x``, destroying locality rather than recovering it.
     :return: ``(p_kde, local_ess_sig, local_ess_bg)``. ``p_kde`` is ``None``
         when both classes' FIXED-bandwidth kernel-weighted mass underflows
         to (numerically) zero at ``x`` -- the degenerate case callers fall
