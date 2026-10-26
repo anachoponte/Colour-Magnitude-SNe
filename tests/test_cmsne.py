@@ -1284,6 +1284,67 @@ check('_kernel_weighted_values returns zeros for empty dims',
 check('_kernel_weighted_values returns zeros for zero training rows',
       np.all(_kernel_weighted_values(np.array([0.0]), np.zeros((0, 1)), np.zeros(0), _kw_h, _kw_dims) == 0.0))
 
+print('\n=== uncertainty-aware noise injection: primitives ===')
+from cmsne.classifier import (colour_feature_sigma_matrix, _replicate_with_uncertainty,
+                              _grouped_effective_sample_size, DEFAULT_N_UNCERTAINTY_REPLICATES)
+from cmsne.importance_sampling import effective_sample_size as _ess_ref2
+
+check('DEFAULT_N_UNCERTAINTY_REPLICATES is a sane positive default', DEFAULT_N_UNCERTAINTY_REPLICATES >= 2,
+      DEFAULT_N_UNCERTAINTY_REPLICATES)
+
+_sig_events = [{'gr': 1.0, 'peakmag': 20.0, 'gr_err': 0.1},
+               {'gr': 2.0, 'peakmag': 21.0}]  # second event has NO gr_err/peakmag_err at all
+_sig_matrix = colour_feature_sigma_matrix(_sig_events, keys=['gr'], extra=('peakmag',))
+check('colour_feature_sigma_matrix reads the *_err field when present',
+      np.isclose(_sig_matrix[0, 0], 0.1), _sig_matrix[0, 0])
+check('colour_feature_sigma_matrix is NaN when no *_err field exists',
+      np.isnan(_sig_matrix[0, 1]) and np.isnan(_sig_matrix[1, 0]) and np.isnan(_sig_matrix[1, 1]))
+
+# No-op: sigma entirely non-finite over dims -> unchanged, no RNG draws.
+_rwu_X = np.array([[1.0, 2.0], [3.0, 4.0]])
+_rwu_w = np.array([0.5, 0.5])
+_rwu_sigma_none = np.full_like(_rwu_X, np.nan)
+_rwu_Xr, _rwu_wr, _rwu_id = _replicate_with_uncertainty(_rwu_X, _rwu_sigma_none, _rwu_w, np.array([0, 1]), 8)
+check('_replicate_with_uncertainty is a no-op when sigma is entirely non-finite',
+      np.array_equal(_rwu_Xr, _rwu_X) and np.array_equal(_rwu_wr, _rwu_w) and
+      np.array_equal(_rwu_id, np.arange(2)))
+
+# Weight preservation: each original event's replica weights sum back exactly.
+_rwu_sigma = np.array([[0.2, np.nan], [np.nan, 0.5]])
+_rwu_Xr2, _rwu_wr2, _rwu_id2 = _replicate_with_uncertainty(_rwu_X, _rwu_sigma, _rwu_w, np.array([0, 1]), 8)
+check('_replicate_with_uncertainty expands each row into n_replicates copies',
+      len(_rwu_Xr2) == 2 * 8, len(_rwu_Xr2))
+check('_replicate_with_uncertainty preserves each original event\'s total weight exactly',
+      np.allclose(np.bincount(_rwu_id2, weights=_rwu_wr2, minlength=2), _rwu_w))
+check('_replicate_with_uncertainty leaves a dimension unperturbed when that row\'s sigma is non-finite',
+      np.all(_rwu_Xr2[_rwu_id2 == 0, 1] == 2.0) and np.all(_rwu_Xr2[_rwu_id2 == 1, 0] == 3.0))
+
+# Perturbation: with a large, finite sigma, replicas measurably scatter.
+_rwu_sigma_big = np.array([[5.0, np.nan]])
+_rwu_Xr3, _, _ = _replicate_with_uncertainty(np.array([[10.0, 0.0]]), _rwu_sigma_big, np.array([1.0]),
+                                              np.array([0]), 2000, seed=1)
+check('_replicate_with_uncertainty replicas scatter with roughly the given sigma',
+      abs(np.std(_rwu_Xr3[:, 0]) - 5.0) < 0.5, np.std(_rwu_Xr3[:, 0]))
+
+# The ESS-inflation bug, and the fix: 5 replicas of ONE real point must not look
+# like 5 independent points.
+_grp_event_id = np.array([0, 0, 0, 0, 0])
+_grp_g = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
+check('naive (ungrouped) ESS is fooled into thinking 5 replicas are 5 independent samples',
+      np.isclose(_ess_ref2(_grp_g), 5.0), _ess_ref2(_grp_g))
+check('_grouped_effective_sample_size correctly reports ESS~1 for 5 replicas of ONE real point',
+      np.isclose(_grouped_effective_sample_size(_grp_g, _grp_event_id, 1), 1.0),
+      _grouped_effective_sample_size(_grp_g, _grp_event_id, 1))
+
+_grp_event_id2 = np.array([0, 0, 0, 1, 1, 1])
+_grp_g2 = np.array([0.1, 0.1, 0.1, 0.05, 0.05, 0.05])
+_grp_expected = _ess_ref2(np.array([0.3, 0.15]))
+check('_grouped_effective_sample_size matches a direct group-sum-then-ESS calculation',
+      np.isclose(_grouped_effective_sample_size(_grp_g2, _grp_event_id2, 2), _grp_expected),
+      (_grouped_effective_sample_size(_grp_g2, _grp_event_id2, 2), _grp_expected))
+check('_grouped_effective_sample_size reduces to plain ESS for a trivial (non-replicated) event_id',
+      np.isclose(_grouped_effective_sample_size(_grp_g2, np.arange(6), 6), _ess_ref2(_grp_g2)))
+
 print('\n=== local density-ratio blend: density ratio and blend weight ===')
 from cmsne.classifier import _local_density_ratio, _blend_weight
 

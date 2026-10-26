@@ -43,6 +43,11 @@ DEFAULT_ESS_THRESHOLD = 10.0
 DEFAULT_LOG_WIDTH = 0.3
 DEFAULT_KDE_MAX_EVENTS = 4000
 DEFAULT_KDE_MIN_ESS = 10.0
+# Uncertainty-aware noise injection (see docs/superpowers/specs/
+# 2026-10-26-uncertainty-aware-noise-injection-design.md). Provisional, like
+# the other blend constants above -- tuned against real data in this plan's
+# own Manual Validation step.
+DEFAULT_N_UNCERTAINTY_REPLICATES = 8
 
 
 def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
@@ -56,6 +61,24 @@ def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEA
     X = np.array([[float(e.get(c, np.nan)) if e.get(c, None) is not None else np.nan
                    for c in columns] for e in events], dtype=float)
     return X, columns
+
+
+def colour_feature_sigma_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
+    """Stack ``events``' per-feature measurement uncertainty (``f'{c}_err'``)
+    into a matrix matching :func:`colour_feature_matrix`'s column order.
+
+    Missing/absent ``_err`` entries become NaN -- :func:`_replicate_with_uncertainty`
+    treats this as "nothing to perturb with", not an error. ``peakmag_fit`` in
+    particular has no ``_err`` companion anywhere in this codebase (see
+    docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md)
+    and will always read NaN here.
+
+    :return: ``(n, d)`` sigma matrix, same column order as :func:`colour_feature_matrix`.
+    """
+    columns = list(keys) + [k for k in extra if k]
+    sigma = np.array([[float(e.get(f'{c}_err', np.nan)) if e.get(f'{c}_err', None) is not None else np.nan
+                        for c in columns] for e in events], dtype=float)
+    return sigma
 
 
 def _weighted_std(values, weights):
@@ -123,6 +146,61 @@ def _kernel_weighted_values(x, X, weights, bandwidths, dims):
     z = (Xd - xd) / hd
     k = np.exp(-0.5 * np.sum(z ** 2, axis=1))
     return np.asarray(weights, dtype=float) * k
+
+
+def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0):
+    """Expand each row of ``X`` into ``n_replicates`` noisy copies, perturbed
+    per dimension in ``dims`` by that row's own ``sigma`` (non-finite or
+    non-positive sigma leaves that dimension exactly as-is for every
+    replica of that row -- nothing to perturb with is not an error). Each
+    replica carries ``weights / n_replicates``, so summed weight mass per
+    original row is preserved exactly.
+
+    :return: ``(X_rep, w_rep, event_id)``. ``event_id[k]`` is the index into
+        the ORIGINAL ``X``/``weights`` that ``X_rep[k]`` came from -- needed
+        to group replicas back together (e.g. for
+        :func:`_grouped_effective_sample_size`).
+
+    If every entry of ``sigma[:, dims]`` is non-finite or non-positive (no
+    real uncertainty data available), or ``n_replicates <= 1``, or ``dims``
+    is empty, returns ``(X, weights, np.arange(len(X)))`` unchanged -- zero
+    extra compute, exact backward compatibility with any population/fixture
+    lacking uncertainty fields.
+    """
+    X = np.asarray(X, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
+    dims = np.asarray(dims, dtype=int)
+    if n_replicates <= 1 or len(dims) == 0 or not np.any(np.isfinite(sigma[:, dims]) & (sigma[:, dims] > 0)):
+        return X, weights, np.arange(len(X))
+
+    rng = np.random.default_rng(seed)
+    n = len(X)
+    X_rep = np.repeat(X, n_replicates, axis=0)
+    event_id = np.repeat(np.arange(n), n_replicates)
+    sigma_rep = np.repeat(sigma, n_replicates, axis=0)
+    for d in dims:
+        perturbable = np.isfinite(sigma_rep[:, d]) & (sigma_rep[:, d] > 0)
+        X_rep[perturbable, d] += rng.normal(0.0, sigma_rep[perturbable, d])
+    w_rep = np.repeat(weights, n_replicates) / n_replicates
+    return X_rep, w_rep, event_id
+
+
+def _grouped_effective_sample_size(g, event_id, n_original):
+    """Kish's effective sample size computed AFTER summing each original
+    event's noise-injection replicas' values back together, so
+    ``n_replicates`` correlated copies of one real observation contribute
+    ESS ~1, not ~n_replicates (see docs/superpowers/specs/
+    2026-10-26-uncertainty-aware-noise-injection-design.md). Reduces to a
+    plain :func:`~cmsne.importance_sampling.effective_sample_size` call
+    when ``event_id`` is trivial (``np.arange(n_original)``, i.e. no
+    replication occurred).
+    """
+    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+    from .importance_sampling import effective_sample_size
+
+    g_grouped = np.bincount(event_id, weights=g, minlength=n_original)
+    return effective_sample_size(g_grouped)
 
 
 def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0, max_iter=20):
