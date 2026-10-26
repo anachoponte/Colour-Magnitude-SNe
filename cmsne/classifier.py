@@ -379,7 +379,8 @@ class ColourClassifier:
                  magnitude_feature=DEFAULT_MAGNITUDE_FEATURE, target_fpr=0.10,
                  calibrate=True, ess_threshold=DEFAULT_ESS_THRESHOLD,
                  log_width=DEFAULT_LOG_WIDTH, kde_max_events=DEFAULT_KDE_MAX_EVENTS,
-                 kde_min_ess=DEFAULT_KDE_MIN_ESS, **hgb):
+                 kde_min_ess=DEFAULT_KDE_MIN_ESS,
+                 n_uncertainty_replicates=DEFAULT_N_UNCERTAINTY_REPLICATES, **hgb):
         self.keys = list(keys)
         if include_peakmag and magnitude_feature:
             if magnitude_feature not in MAGNITUDE_FEATURES:
@@ -399,6 +400,7 @@ class ColourClassifier:
         self.log_width = log_width
         self.kde_max_events = kde_max_events
         self.kde_min_ess = kde_min_ess
+        self.n_uncertainty_replicates = n_uncertainty_replicates
 
     def fit(self, signal_events, background_events,
             signal_weights=None, background_weights=None):
@@ -413,17 +415,32 @@ class ColourClassifier:
         Xs, cols = colour_feature_matrix(signal_events, self.keys, self.extra)
         Xb, _ = colour_feature_matrix(background_events, self.keys, self.extra)
         self.columns = cols
+        sigma_s = colour_feature_sigma_matrix(signal_events, self.keys, self.extra)
+        sigma_b = colour_feature_sigma_matrix(background_events, self.keys, self.extra)
 
         ws = np.ones(len(Xs)) if signal_weights is None else np.asarray(signal_weights, float)
         wb = np.ones(len(Xb)) if background_weights is None else np.asarray(background_weights, float)
         if ws.sum() > 0:
             ws = ws * (wb.sum() / ws.sum())            # balance totals
 
-        X = np.vstack([Xs, Xb])
-        y = np.r_[np.ones(len(Xs)), np.zeros(len(Xb))]
-        w = np.r_[ws, wb]
+        # Noise-injection replication for the TREE only, on the full balanced
+        # population -- see Global Constraints. _store_kde_training_data below
+        # keeps the ORIGINAL, un-replicated arrays; the KDE replicates lazily,
+        # per pattern, after its own kde_max_events cap (Task 4).
+        dims_all = np.arange(Xs.shape[1])
+        Xs_rep, ws_rep, _ = _replicate_with_uncertainty(
+            Xs, sigma_s, ws, dims_all, self.n_uncertainty_replicates)
+        Xb_rep, wb_rep, _ = _replicate_with_uncertainty(
+            Xb, sigma_b, wb, dims_all, self.n_uncertainty_replicates)
+
+        X = np.vstack([Xs_rep, Xb_rep])
+        y = np.r_[np.ones(len(Xs_rep)), np.zeros(len(Xb_rep))]
+        w = np.r_[ws_rep, wb_rep]
         # Signal and background totals are balanced, so the trained posterior is at a
-        # 0.5 prior; probability(prior=...) rescales it to any other prior.
+        # 0.5 prior; probability(prior=...) rescales it to any other prior. Uses the
+        # ORIGINAL ws/wb -- a class total is unaffected by replication either way
+        # (weights sum back exactly), but there is no reason to route this through
+        # the replicated arrays.
         self.train_prior = float(ws.sum() / (ws.sum() + wb.sum()))
 
         base = HistGradientBoostingClassifier(**self.params)
@@ -432,12 +449,15 @@ class ColourClassifier:
         else:
             self.clf = base.fit(X, y, sample_weight=w)
 
+        # Threshold-setting stays on the REAL, un-replicated background -- this is
+        # calibration against the actual rate-weighted population, not a training
+        # input, so it should not see synthetic noise copies.
         sb = self.clf.predict_proba(Xb)[:, 1]
         self.threshold = float(weighted_quantile(sb, wb, q=1.0 - self.target_fpr))
-        self._store_kde_training_data(Xs, ws, Xb, wb)
+        self._store_kde_training_data(Xs, ws, Xb, wb, sigma_s, sigma_b)
         return self
 
-    def _store_kde_training_data(self, Xs, ws, Xb, wb):
+    def _store_kde_training_data(self, Xs, ws, Xb, wb, sigma_s, sigma_b):
         """Retain the full (positive-weight) training events/weights +
         bandwidths for the local density-ratio blend in :meth:`probability`,
         and reset the per-pattern cache. ``ws``/``wb`` must already be the
@@ -459,6 +479,7 @@ class ColourClassifier:
         """
         pos_s = ws > 0
         pos_b = wb > 0
+        self._kde_sigma_s_unfiltered, self._kde_sigma_b_unfiltered = sigma_s, sigma_b
         self._kde_Xs, self._kde_ws = Xs[pos_s], ws[pos_s]
         self._kde_Xb, self._kde_wb = Xb[pos_b], wb[pos_b]
         pooled_X = np.vstack([self._kde_Xs, self._kde_Xb])
@@ -471,9 +492,24 @@ class ColourClassifier:
 
         Monotonic with :meth:`probability`, so it gives the same ordering; use it
         when you only need to rank.
+
+        Each query event is noise-injection-replicated from its OWN ``*_err``
+        fields (if present) and the tree's predictions are averaged back to one
+        value per event -- symmetric treatment with how training data is
+        handled (see docs/superpowers/specs/
+        2026-10-26-uncertainty-aware-noise-injection-design.md). With no
+        ``*_err`` data, this is numerically identical to a direct
+        ``predict_proba`` call.
         """
         X, _ = colour_feature_matrix(events, self.keys, self.extra)
-        return self.clf.predict_proba(X)[:, 1]
+        sigma = colour_feature_sigma_matrix(events, self.keys, self.extra)
+        dims_all = np.arange(X.shape[1])
+        X_rep, _, event_id = _replicate_with_uncertainty(
+            X, sigma, np.ones(len(X)), dims_all, self.n_uncertainty_replicates)
+        p_rep = self.clf.predict_proba(X_rep)[:, 1]
+        counts = np.bincount(event_id, minlength=len(X))
+        sums = np.bincount(event_id, weights=p_rep, minlength=len(X))
+        return sums / counts
 
     def probability(self, events, prior=None):
         """Posterior probability P(lensed SN Ia) for each event.

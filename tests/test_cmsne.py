@@ -1485,6 +1485,41 @@ check('TrajectoryClassifier inherits the sparse-corner blend with no extra code'
       (_tc_corner_blended, _tc_corner_tree_only))
 
 
+print('\n=== uncertainty-aware noise injection: tree-side wiring ===')
+
+check('ColourClassifier stores n_uncertainty_replicates',
+      ColourClassifier(n_uncertainty_replicates=3).n_uncertainty_replicates == 3)
+
+# A population with real, large gr_err values trains and predicts without error.
+_rng_unc = np.random.default_rng(11)
+_n_unc = 300
+_unc_sig = [{'gr': float(_rng_unc.normal(1.0, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+             'gr_err': float(abs(_rng_unc.normal(0.3, 0.1))), 'peakmag_err': 0.1}
+            for _ in range(_n_unc)]
+_unc_bg = [{'gr': float(_rng_unc.normal(1.3, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+            'gr_err': float(abs(_rng_unc.normal(0.3, 0.1))), 'peakmag_err': 0.1}
+           for _ in range(_n_unc)]
+_unc_w = np.full(_n_unc, 1e-5)
+_clf_unc = ColourClassifier(keys=['gr'], include_peakmag=True, n_uncertainty_replicates=4)
+_clf_unc.fit(_unc_sig, _unc_bg, _unc_w, _unc_w)
+_unc_probe = _clf_unc.score([{'gr': 1.1, 'peakmag': 22.0, 'gr_err': 0.2}])
+check('a classifier trained with real uncertainty data produces a finite, calibrated-range score',
+      np.isfinite(_unc_probe[0]) and 0.0 <= _unc_probe[0] <= 1.0, _unc_probe[0])
+
+# With NO uncertainty data anywhere (training OR query -- reusing the
+# error-free _dense_sig/_dense_bg/_dense_sw/_dense_bw fixtures from the
+# "wired into ColourClassifier" section above), score() is numerically
+# identical to predict_proba directly: replication is a true no-op start to
+# finish, not just at the query.
+_clf_noerr = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_noerr.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
+_X_direct, _ = colour_feature_matrix([{'gr': 1.1, 'peakmag': 22.0}], ['gr'], ('peakmag',))
+check('score() with no *_err data anywhere matches predict_proba directly '
+      '(replication is a true no-op, training and query alike)',
+      np.isclose(_clf_noerr.score([{'gr': 1.1, 'peakmag': 22.0}])[0],
+                 _clf_noerr.clf.predict_proba(_X_direct)[0, 1]))
+
+
 print('\n=== local density-ratio blend: backward compatibility and kde_max_events ===')
 
 # Production-shaped: wide dynamic range of rate weights (spanning several
@@ -1554,7 +1589,8 @@ _Xs_waste = np.vstack([
 _ws_waste = np.full(_n_both + _n_col0_only, 1e-6)
 _clf_waste = ColourClassifier(keys=['gr'], include_peakmag=True, kde_max_events=10)
 _clf_waste.columns = ['gr', 'peakmag']
-_clf_waste._store_kde_training_data(_Xs_waste, _ws_waste, _Xs_waste, _ws_waste)
+_sigma_waste = np.full_like(_Xs_waste, np.nan)  # no uncertainty data -- isolates the subsampling behaviour
+_clf_waste._store_kde_training_data(_Xs_waste, _ws_waste, _Xs_waste, _ws_waste, _sigma_waste, _sigma_waste)
 check('_store_kde_training_data retains the FULL population (no global subsampling)',
       _clf_waste._kde_Xs.shape[0] == _n_both + _n_col0_only, _clf_waste._kde_Xs.shape[0])
 _Xs_both, _, _, _, _, _ = _clf_waste._kde_subset_for_pattern((True, True), np.array([0, 1]))
