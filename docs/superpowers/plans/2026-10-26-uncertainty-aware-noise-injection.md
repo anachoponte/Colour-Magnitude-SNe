@@ -550,7 +550,12 @@ git commit -m "feat: add uncertainty-aware noise-injection primitives"
 
 - [ ] **Step 1: Write the failing tests**
 
-After Task 2's new section, insert:
+This section reuses `_dense_sig`/`_dense_bg`/`_dense_sw`/`_dense_bw`, which are
+defined in the `=== local density-ratio blend: wired into ColourClassifier ===`
+section -- NOT immediately after Task 2's section (which sits one section
+*before* that, and does not yet have those fixtures in scope). Insert
+immediately after that section's own checks finish, right before
+`=== local density-ratio blend: backward compatibility and kde_max_events ===`:
 ```python
 print('\n=== uncertainty-aware noise injection: tree-side wiring ===')
 from cmsne.classifier import ColourClassifier
