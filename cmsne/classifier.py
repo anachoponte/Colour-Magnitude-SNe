@@ -531,13 +531,32 @@ class ColourClassifier:
         if replicated and 'early_stopping' not in self.params:
             # Replication creates K near-duplicate (noise-perturbed) copies of
             # each original event. HistGradientBoostingClassifier's own
-            # early_stopping='auto' heuristic enables itself from the inflated,
-            # REPLICATED sample count -- but its internal train/validation split
-            # can then land siblings of the same original event on both sides,
-            # so validation loss no longer reflects genuinely held-out data (see
-            # docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
-            # Disable it unless the caller explicitly set early_stopping themselves.
-            params['early_stopping'] = False
+            # early_stopping='auto' heuristic decides from n_samples > 10,000 --
+            # if applied to the REPLICATED count, it could enable (or disable)
+            # early stopping purely as a side effect of replication having
+            # happened, rather than reflecting the ORIGINAL population's own
+            # scale. That would confound an n_uncertainty_replicates sweep (the
+            # K=1 no-op baseline keeps sklearn's native 'auto' decision on the
+            # ORIGINAL count; K>1 must match that SAME decision, not silently
+            # change it) -- and for a population whose REPLICATED count crosses
+            # 10,000 while its ORIGINAL count does not, enabling early stopping
+            # would let near-duplicate replicas of the same event land on both
+            # sides of its internal train/validation split, so validation loss
+            # stops reflecting genuinely held-out data (see docs/superpowers/
+            # specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+            # Deciding from the ORIGINAL count, applied whether or not
+            # replication occurs, fixes both: the decision never differs from
+            # what K=1 would already give on the same data, and a population
+            # that would never have triggered 'auto' pre-replication doesn't
+            # spuriously trigger it now. HistGradientBoostingClassifier's own
+            # default (20) similarly counts REPLICA rows for min_samples_leaf,
+            # so a "leaf" of 20 replica rows is only 20/K real events once
+            # replication multiplies the row count -- a capacity increase that
+            # stacks on top of noise injection's own smoothing effect and would
+            # likewise confound the sweep; scale it by K to hold per-event leaf
+            # granularity constant.
+            params['early_stopping'] = (len(Xs) + len(Xb)) > 10_000
+            params.setdefault('min_samples_leaf', 20 * self.n_uncertainty_replicates)
         base = HistGradientBoostingClassifier(**params)
         if self.calibrate:
             self.clf = CalibratedClassifierCV(base, method='isotonic', cv=3).fit(X, y, sample_weight=w)

@@ -1904,6 +1904,49 @@ _es_clf_override.fit(_es_sig, _es_bg, _es_w, _es_w)
 check('an explicit early_stopping=True passed by the caller is never overridden by this fix',
       _es_clf_override.clf.get_params()['early_stopping'] is True)
 
+print('\n=== second-pass review fix: early_stopping decision does not depend on whether '
+      'replication happened, only on ORIGINAL row count ===')
+# Finding: the fix above decided early_stopping purely from "did replication occur",
+# always forcing False when it did. On real BlueBEAR production data the ORIGINAL
+# population already exceeds 10,000 rows (sklearn's own 'auto' threshold), so this
+# made n_uncertainty_replicates=1 (no-op, early_stopping stays 'auto' -> effectively
+# True) and n_uncertainty_replicates=8 (forced False) train under DIFFERENT
+# early_stopping regimes purely as an accident of replication, confounding the
+# Manual Validation sweep's n_uncertainty_replicates axis with an unrelated
+# early-stopping/capacity change, not noise injection alone.
+_eso_rng = np.random.default_rng(32)
+_n_eso = 6000  # 6000 signal + 6000 background = 12000 original rows, ABOVE 10,000 alone
+_eso_sig = [{'gr': float(_eso_rng.normal(1.0, 0.3)), 'peakmag': float(_eso_rng.normal(22.0, 1.0)),
+             'gr_err': 0.2} for _ in range(_n_eso)]
+_eso_bg = [{'gr': float(_eso_rng.normal(1.3, 0.3)), 'peakmag': float(_eso_rng.normal(22.0, 1.0)),
+            'gr_err': 0.2} for _ in range(_n_eso)]
+_eso_w = np.full(_n_eso, 1e-5)
+_eso_clf_rep = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                                n_uncertainty_replicates=8)
+_eso_clf_rep.fit(_eso_sig, _eso_bg, _eso_w, _eso_w)
+check('with ORIGINAL row count already above 10,000, early_stopping stays True even '
+      'though replication is active -- matching what n_uncertainty_replicates=1 (no-op, '
+      'sklearn\'s own \'auto\' on this same ORIGINAL count) would already give, so the '
+      'sweep is not confounded by an early-stopping difference',
+      _eso_clf_rep.clf.get_params()['early_stopping'] is True,
+      _eso_clf_rep.clf.get_params()['early_stopping'])
+
+check('min_samples_leaf is scaled by n_uncertainty_replicates when replication actually '
+      'occurs, so a "leaf" still requires ~20 REAL distinct events\' worth of replica rows '
+      '(sklearn\'s own default of 20 would otherwise count replica rows, making a leaf only '
+      '20/K real events -- a tree-capacity increase stacking on top of noise smoothing, not '
+      'noise injection alone)',
+      _eso_clf_rep.clf.get_params()['min_samples_leaf'] == 20 * 8,
+      _eso_clf_rep.clf.get_params()['min_samples_leaf'])
+
+_eso_clf_noinj = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                                  n_uncertainty_replicates=1)
+_eso_clf_noinj.fit(_eso_sig, _eso_bg, _eso_w, _eso_w)
+check('min_samples_leaf is left at sklearn\'s own default (20) when no replication '
+      'occurs (n_uncertainty_replicates=1, true no-op)',
+      _eso_clf_noinj.clf.get_params()['min_samples_leaf'] == 20,
+      _eso_clf_noinj.clf.get_params()['min_samples_leaf'])
+
 print('\n=== final review fix: threshold calibration matches what predict() actually compares against ===')
 # Finding: self.threshold was calibrated from raw self.clf.predict_proba(Xb), but
 # predict()/recovery_rate()/roc_curve() all compare it against self.score(), which
