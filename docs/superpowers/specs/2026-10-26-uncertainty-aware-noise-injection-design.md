@@ -372,9 +372,10 @@ never intended to address.
   control how much weight the blend gives the KDE side).
 - **Bright+red corner (`P(lensed) > 0.9`) re-check: FAILS**, exactly as
   before noise injection — `min=0.0002, median=0.0005, max=0.9997` over
-  3000 grid points, byte-for-byte consistent with the pre-noise-injection
-  subsampling-fix validation's own corner numbers
-  (`docs/superpowers/specs/2026-10-26-kde-pattern-aware-subsampling-design.md`).
+  3000 grid points, matching the pre-noise-injection subsampling-fix
+  validation's own corner numbers to the precision reported there
+  (`docs/superpowers/specs/2026-10-26-kde-pattern-aware-subsampling-design.md`;
+  see "Provenance" below for why this is "matching," not "byte-identical").
   This failure was already understood to be driven by genuine `lensed_Ia`
   Monte Carlo sparsity in that extreme region (~13-15 raw events out of
   100,000 attempted, per that investigation) — not something noise
@@ -402,6 +403,74 @@ never intended to address.
   investigation (plausibly `CalibratedClassifierCV`'s isotonic-fit
   variance across runs) and not pursued further — the number that matters
   for real use, the full combined overhead, is the 2.2× figure.
+
+**Provenance: which commit these numbers came from, and what changed
+underneath them since.** The numbers above were first committed at
+`febe808`. Four behaviour-changing commits landed in `fit()` AFTER
+`febe808` (all part of the same whole-branch review cycle, before this
+plan merged):
+
+- `0771971` — batch-order-independent replication (content-seeded RNG;
+  unrelated to the numbers above) + a first attempt at controlling
+  `HistGradientBoostingClassifier`'s `early_stopping`/`min_samples_leaf`
+  (disable `early_stopping` whenever replication occurs).
+- `34a8b13` — the `self.threshold` calibration-basis fix (unrelated to
+  the numbers above; affects `predict()`'s operating point, not
+  `probability()`/`score()`'s values).
+- `d29558a` — revised the `early_stopping` fix to decide from the
+  *original* (pre-replication) row count rather than "did replication
+  happen", so `n_uncertainty_replicates=1` and `>1` get the same
+  `early_stopping` *flag* for the same data.
+- `7298fb9` — found `d29558a`'s flag-matching insufficient:
+  `HistGradientBoostingClassifier`'s internal train/validation split has
+  no concept of "replica siblings", so at `K>1` near-duplicate replicas
+  can land on both sides of that split regardless of the flag, letting
+  validation loss track training loss almost exactly and silently
+  defeating the stop-on-plateau criterion — `n_iter_` can diverge toward
+  `max_iter` at `K>1` even with `early_stopping=True` on both sides,
+  while `K=1` (no replication, no such leakage) genuinely stops early.
+  Fixed by precomputing `n_iter_` from a one-time reference fit on the
+  *original* population, then fitting the replicated data with
+  `early_stopping` explicitly off and `max_iter` pinned to that exact
+  value — verified on a synthetic worst-case fixture (`K=1` stops at
+  `n_iter_=43`, `K=8` is correctly pinned to `43` too, not `300`).
+
+**What this means for the numbers above.** At `febe808` (and `d29558a`),
+`fit()` had no `min_samples_leaf` control at all (sklearn's own default,
+20, applied to the *replicated* row count), and the `n_iter_`-divergence
+mechanism `7298fb9` fixes was present in principle at every `K>1` in the
+sweep — not as an asymmetry introduced later against `K=1` (an earlier,
+inaccurate framing in this plan's own PR description said exactly that;
+it has been corrected), but as an issue that could in principle have
+affected every `K>1` config in the originally-reported sweep equally,
+since `K=1` alone never replicates and was never exposed to it.
+**Empirically, on this real population, it had no observable effect**:
+re-running the sweep with `7298fb9`'s actual fix (job `59203583`) shows
+`n_iter_=300` (i.e. `early_stopping` never actually engages) at *every*
+swept `K` — `1, 4, 8, 16, 32` alike — so neither the originally-reported
+numbers nor the fixed ones were ever shaped by early-stopping divergence
+on this specific population/feature combination; the mechanism exists
+and is now closed, but this dataset never exercised it. `min_samples_leaf`
+*does* scale with `K` as designed (`20, 80, 160, 320, 640` at
+`K=1,4,8,16,32`) — a real, intentional capacity control, not a bug, and
+not previously documented in this section.
+
+**Re-validated numbers (job `59203583`, commit `7298fb9`), compared
+against the originally-reported ones (job `59049686`, commit `febe808`):**
+corner `min=0.000206` vs `0.0002`, `median=0.000478` vs `0.0005` — matching
+at the ~4-decimal precision either run can be expected to reproduce at
+(not byte-identical: noise injection's own RNG draws, and the reference
+fit itself, consume randomness that differs run to run even at fixed
+seeds once the surrounding code changes). The `n_uncertainty_replicates`
+sweep values likewise match to within ~0.0001 absolute at every `K`
+tested. Timing came back at `224.5s` for this re-run (vs `215.1s`
+originally, vs `274.9s` on an intermediate, now-superseded re-check under
+`d29558a`'s flag-only fix) — all three in the same ~215-275s band,
+consistent with ordinary BlueBEAR load variance across separate,
+untimed, single runs rather than a reproducible trend; not pursued
+further, same posture as the no-injection-blend-faster-than-tree-only
+anomaly already noted above. **Conclusion stands, now on accurate
+footing: no correction to the headline validation result is needed.**
 
 **Conclusion.** The feature is implemented and tested correctly (unit and
 integration), is a true no-op wherever no uncertainty data exists, and does
