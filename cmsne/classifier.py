@@ -205,10 +205,20 @@ def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0, m
         can otherwise produce a physically impossible feature vector (a
         "cumulative best" that gets fainter over time). ``None`` (the
         default, every pre-existing caller) applies no such constraint.
-        NaN entries (e.g. a not-yet-revealed future step) are untouched by
-        earlier, finite entries -- ``np.minimum`` propagates NaN only
-        forward along the sequence, matching the one-directional
-        causal/chronological order these groups are given in.
+
+        PRECONDITION: within a group, NaN entries must only ever be
+        TRAILING (a not-yet-revealed future step, as
+        :func:`cmsne.trajectory.reveal_up_to`/:func:`cmsne.trajectory.event_trajectory`
+        always produce) -- ``np.minimum.accumulate`` then correctly leaves
+        every hidden step NaN (propagating forward from the first NaN it
+        meets), matching "we don't know this yet". A LEADING NaN earlier
+        than a finite entry would instead poison every later entry in the
+        group to NaN too (``np.minimum`` always propagates NaN once it
+        appears). ``np.fmin.accumulate`` would fix that leading-NaN case,
+        but at the cost of silently un-hiding a genuinely-masked trailing
+        NaN by filling it with the last finite value instead of keeping it
+        NaN -- a worse, silent regression for this primitive's one real
+        caller, so this function does not use it.
 
     :return: ``(X_rep, w_rep, event_id)``. ``event_id[k]`` is the index into
         the ORIGINAL ``X``/``weights`` that ``X_rep[k]`` came from -- needed
@@ -586,34 +596,45 @@ class ColourClassifier:
 
         params = dict(self.params)
         replicated = len(Xs_rep) != len(Xs) or len(Xb_rep) != len(Xb)
-        if replicated and 'early_stopping' not in self.params:
-            # Replication creates K near-duplicate (noise-perturbed) copies of
-            # each original event. HistGradientBoostingClassifier's own
-            # early_stopping='auto' heuristic decides from n_samples > 10,000 --
-            # if applied to the REPLICATED count, it could enable (or disable)
-            # early stopping purely as a side effect of replication having
-            # happened, rather than reflecting the ORIGINAL population's own
-            # scale. That would confound an n_uncertainty_replicates sweep (the
-            # K=1 no-op baseline keeps sklearn's native 'auto' decision on the
-            # ORIGINAL count; K>1 must match that SAME decision, not silently
-            # change it) -- and for a population whose REPLICATED count crosses
-            # 10,000 while its ORIGINAL count does not, enabling early stopping
-            # would let near-duplicate replicas of the same event land on both
-            # sides of its internal train/validation split, so validation loss
-            # stops reflecting genuinely held-out data (see docs/superpowers/
-            # specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
-            # Deciding from the ORIGINAL count, applied whether or not
-            # replication occurs, fixes both: the decision never differs from
-            # what K=1 would already give on the same data, and a population
-            # that would never have triggered 'auto' pre-replication doesn't
-            # spuriously trigger it now. HistGradientBoostingClassifier's own
-            # default (20) similarly counts REPLICA rows for min_samples_leaf,
-            # so a "leaf" of 20 replica rows is only 20/K real events once
-            # replication multiplies the row count -- a capacity increase that
-            # stacks on top of noise injection's own smoothing effect and would
-            # likewise confound the sweep; scale it by K to hold per-event leaf
-            # granularity constant.
-            params['early_stopping'] = (len(Xs) + len(Xb)) > 10_000
+        if replicated:
+            if 'early_stopping' not in self.params:
+                # Matching the early_stopping FLAG between K=1 and K>1 is not
+                # enough: HistGradientBoostingClassifier's internal train/
+                # validation split (for early_stopping=True or 'auto') has no
+                # concept of "replica siblings" -- at K>1, near-duplicate
+                # replicas of the same original event can land on BOTH sides
+                # of that split, so validation loss tracks training loss
+                # almost exactly and the stop-on-plateau criterion silently
+                # never fires. n_iter_ then diverges towards max_iter even
+                # with the SAME flag value K=1 would have used, because K=1
+                # (no replication) has no such leakage and genuinely stops
+                # early. Precompute n_iter_ from a ONE-TIME reference fit on
+                # the ORIGINAL, un-replicated population (sklearn's own
+                # 'auto' decision, no leakage possible there), then fit the
+                # REPLICATED data with early_stopping explicitly OFF and
+                # max_iter pinned to that SAME discovered value -- this
+                # guarantees IDENTICAL effective model capacity between K=1
+                # and K>1 by construction (same data, same params, same
+                # random_state => the SAME n_iter_, not merely the same
+                # flag), rather than one of the two regimes silently training
+                # to very different depths (see docs/superpowers/specs/
+                # 2026-10-26-uncertainty-aware-noise-injection-design.md).
+                ref_params = dict(self.params)
+                ref_params['early_stopping'] = 'auto'
+                X_orig = np.vstack([Xs, Xb])
+                y_orig = np.r_[np.ones(len(Xs)), np.zeros(len(Xb))]
+                w_orig = np.r_[ws, wb]
+                ref_n_iter = HistGradientBoostingClassifier(**ref_params).fit(
+                    X_orig, y_orig, sample_weight=w_orig).n_iter_
+                params['early_stopping'] = False
+                params['max_iter'] = ref_n_iter
+            # HistGradientBoostingClassifier's own default min_samples_leaf (20)
+            # counts REPLICA rows, so a "leaf" of 20 replica rows is only 20/K
+            # real events once replication multiplies the row count -- a
+            # capacity increase stacking on noise injection's own smoothing
+            # effect. Scale by K to hold per-event leaf granularity constant.
+            # Applies whenever replication occurs, independent of whether the
+            # caller set early_stopping themselves above (a separate concern).
             params.setdefault('min_samples_leaf', 20 * self.n_uncertainty_replicates)
         base = HistGradientBoostingClassifier(**params)
         if self.calibrate:

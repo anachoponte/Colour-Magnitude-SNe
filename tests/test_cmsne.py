@@ -1936,6 +1936,22 @@ check('TrajectoryClassifier fit+probability on a population of REAL event_trajec
       np.all(np.isfinite(_real_traj_probe)) and np.all((_real_traj_probe >= 0) & (_real_traj_probe <= 1)),
       _real_traj_probe.tolist())
 
+# M6: verify the monotonicity invariant survives INSIDE the actual KDE cache
+# (_kde_subset_for_pattern's stored, post-replication subset), not just inferred
+# from "probability() didn't crash and stayed in [0,1]".
+from cmsne.classifier import _finite_pattern
+_real_traj_Xq, _ = colour_feature_matrix(_real_traj_sig[:1], _real_traj_clf.keys, _real_traj_clf.extra)
+_real_traj_pattern = _finite_pattern(_real_traj_Xq[0])
+_real_traj_dims = np.where(np.asarray(_real_traj_pattern))[0]
+_real_traj_subset = _real_traj_clf._kde_subset_for_pattern(_real_traj_pattern, _real_traj_dims)
+_real_traj_mag_idx = [_real_traj_clf.columns.index(k) for k in TRAJECTORY_MAGNITUDE_KEYS]
+check('inside the REAL, post-replication KDE-cached training subset, every cumulative-'
+      'peakmag row (signal side) stays non-increasing across the grid-step sequence',
+      np.all(np.diff(_real_traj_subset.Xs[:, _real_traj_mag_idx], axis=1) <= 0))
+check('inside the REAL, post-replication KDE-cached training subset, every cumulative-'
+      'peakmag row (background side) stays non-increasing across the grid-step sequence',
+      np.all(np.diff(_real_traj_subset.Xb[:, _real_traj_mag_idx], axis=1) <= 0))
+
 
 print('\n=== final review fix: _replicate_with_uncertainty is batch/row-order independent ===')
 # Finding from the final whole-branch review: _replicate_with_uncertainty drew noise
@@ -2023,14 +2039,18 @@ check('an explicit early_stopping=True passed by the caller is never overridden 
 
 print('\n=== second-pass review fix: early_stopping decision does not depend on whether '
       'replication happened, only on ORIGINAL row count ===')
-# Finding: the fix above decided early_stopping purely from "did replication occur",
+# Finding: the FIRST fix decided early_stopping purely from "did replication occur",
 # always forcing False when it did. On real BlueBEAR production data the ORIGINAL
 # population already exceeds 10,000 rows (sklearn's own 'auto' threshold), so this
 # made n_uncertainty_replicates=1 (no-op, early_stopping stays 'auto' -> effectively
 # True) and n_uncertainty_replicates=8 (forced False) train under DIFFERENT
 # early_stopping regimes purely as an accident of replication, confounding the
 # Manual Validation sweep's n_uncertainty_replicates axis with an unrelated
-# early-stopping/capacity change, not noise injection alone.
+# early-stopping/capacity change, not noise injection alone. (The fix landed here --
+# always False, with max_iter pinned to a reference fit -- was itself superseded by
+# the third-pass fix further below, once matching the FLAG was found not to fix the
+# underlying leak; this section's own check now asserts the CURRENT, final
+# behaviour, not the intermediate one.)
 _eso_rng = np.random.default_rng(32)
 _n_eso = 6000  # 6000 signal + 6000 background = 12000 original rows, ABOVE 10,000 alone
 _eso_sig = [{'gr': float(_eso_rng.normal(1.0, 0.3)), 'peakmag': float(_eso_rng.normal(22.0, 1.0)),
@@ -2041,11 +2061,15 @@ _eso_w = np.full(_n_eso, 1e-5)
 _eso_clf_rep = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
                                 n_uncertainty_replicates=8)
 _eso_clf_rep.fit(_eso_sig, _eso_bg, _eso_w, _eso_w)
-check('with ORIGINAL row count already above 10,000, early_stopping stays True even '
-      'though replication is active -- matching what n_uncertainty_replicates=1 (no-op, '
-      'sklearn\'s own \'auto\' on this same ORIGINAL count) would already give, so the '
-      'sweep is not confounded by an early-stopping difference',
-      _eso_clf_rep.clf.get_params()['early_stopping'] is True,
+# Superseded by the third-pass fix below: matching the FLAG alone (early_stopping=True
+# for both K=1 and K=8) turned out not to fix the real leak (HGB's internal validation
+# split has no concept of replica siblings), so the implementation now always disables
+# early_stopping and pins max_iter to a reference fit's discovered value whenever
+# replication occurs with no explicit override -- never leaves it as True itself.
+check('early_stopping is explicitly False (with max_iter pinned, not sklearn\'s own '
+      'decision) once replication is active and the caller has not set it themselves, '
+      'regardless of whether the ORIGINAL row count was above or below 10,000',
+      _eso_clf_rep.clf.get_params()['early_stopping'] is False,
       _eso_clf_rep.clf.get_params()['early_stopping'])
 
 check('min_samples_leaf is scaled by n_uncertainty_replicates when replication actually '
@@ -2063,6 +2087,56 @@ check('min_samples_leaf is left at sklearn\'s own default (20) when no replicati
       'occurs (n_uncertainty_replicates=1, true no-op)',
       _eso_clf_noinj.clf.get_params()['min_samples_leaf'] == 20,
       _eso_clf_noinj.clf.get_params()['min_samples_leaf'])
+
+print('\n=== third-pass review fix: K=1 and K=8 get IDENTICAL effective n_iter_, not just '
+      'matching early_stopping flags ===')
+# Finding: matching the early_stopping FLAG (the fix above) does not fix the leak --
+# HistGradientBoostingClassifier's own internal validation split has no concept of
+# "replica siblings", so at K=8 near-duplicate replicas can land on BOTH sides of
+# that split, letting validation loss track training loss almost exactly and never
+# triggering a stop -- n_iter_ silently diverges toward max_iter even with
+# early_stopping=True on both sides, while K=1 (no replication, no such leakage)
+# genuinely stops early. Fixed by precomputing n_iter_ from a one-time reference fit
+# on the ORIGINAL data, then pinning the replicated fit's max_iter to that exact
+# value with early_stopping explicitly off.
+# A dedicated, cleanly-separable fixture (l2_regularization=0 -- the default 1.0
+# keeps the loss improving past max_iter=300 regardless, which would make this
+# check pass vacuously with BOTH sides just hitting the ceiling) that genuinely
+# makes early stopping fire for K=1, so the comparison below actually exercises
+# the leak this fix addresses rather than two configs that coincidentally agree
+# because neither ever stops early.
+_niter_rng = np.random.default_rng(1)
+_n_niter = 6000
+_niter_sig = [{'gr': float(_niter_rng.normal(1.0, 0.05)), 'gr_err': 0.03} for _ in range(_n_niter)]
+_niter_bg = [{'gr': float(_niter_rng.normal(5.0, 0.05)), 'gr_err': 0.03} for _ in range(_n_niter)]
+_niter_w = np.full(_n_niter, 1e-5)
+_niter_clf_k1 = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=False,
+                                 n_uncertainty_replicates=1, l2_regularization=0.0)
+_niter_clf_k1.fit(_niter_sig, _niter_bg, _niter_w, _niter_w)
+_niter_clf_k8 = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=False,
+                                 n_uncertainty_replicates=8, l2_regularization=0.0)
+_niter_clf_k8.fit(_niter_sig, _niter_bg, _niter_w, _niter_w)
+check('fixture check: early stopping genuinely fires for K=1 on this cleanly-separable '
+      'data (n_iter_ well below max_iter=300), so the comparison below is not vacuous',
+      _niter_clf_k1.clf.n_iter_ < 300, _niter_clf_k1.clf.n_iter_)
+check('K=1 (no-op, sklearn\'s own \'auto\' on the original data) and K=8 (replicated, '
+      'pinned to a reference fit\'s discovered n_iter_) train for the EXACT SAME '
+      'number of effective boosting iterations on the same underlying data -- K=8 '
+      'does NOT diverge toward max_iter the way it would under a flag-only fix',
+      _niter_clf_k1.clf.n_iter_ == _niter_clf_k8.clf.n_iter_,
+      (_niter_clf_k1.clf.n_iter_, _niter_clf_k8.clf.n_iter_))
+
+_m2_clf = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                           n_uncertainty_replicates=8, early_stopping=True)
+_m2_clf.fit(_eso_sig, _eso_bg, _eso_w, _eso_w)
+check('min_samples_leaf is still scaled by K even when the caller explicitly sets '
+      'early_stopping themselves (previously nested inside the same guard, so an '
+      'explicit early_stopping override silently lost the min_samples_leaf scaling too)',
+      _m2_clf.clf.get_params()['min_samples_leaf'] == 20 * 8,
+      _m2_clf.clf.get_params()['min_samples_leaf'])
+check('an explicit early_stopping=True from the caller is still never overridden by '
+      'the reference-fit mechanism',
+      _m2_clf.clf.get_params()['early_stopping'] is True)
 
 print('\n=== final review fix: threshold calibration matches what predict() actually compares against ===')
 # Finding: self.threshold was calibrated from raw self.clf.predict_proba(Xb), but
