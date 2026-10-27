@@ -619,6 +619,37 @@ class ColourClassifier:
                 # flag), rather than one of the two regimes silently training
                 # to very different depths (see docs/superpowers/specs/
                 # 2026-10-26-uncertainty-aware-noise-injection-design.md).
+                # KNOWN LIMITATION (not fixed, documented): this reference fit
+                # runs ONCE on the FULL original population and pins every
+                # replicated fold to that ONE discovered n_iter_. When
+                # `self.calibrate=True` (the default), K=1 itself has no
+                # single canonical n_iter_ to match in the first place --
+                # CalibratedClassifierCV's cv=3 folds each train on a
+                # different ~2/3 subset, so K=1's OWN three folds naturally
+                # land on three DIFFERENT n_iter_ values (measured: [33, 37,
+                # 42] at one 30,000-row scale). The "identical effective
+                # capacity" guarantee this fix provides is therefore exact
+                # only for `calibrate=False`; for `calibrate=True` it reduces
+                # to a weaker one -- the single pinned value stays close to
+                # K=1's own fold range rather than diverging toward max_iter
+                # the way the pre-this-fix flag-only logic could (measured,
+                # same 30,000-row scale: K=1 folds [33,37,42], this fix's K=8
+                # pinned to 49 -- close; the OLD flag-only logic's K=8 folds
+                # at [58,68,60] -- already a bit further, and this fix's own
+                # worst case is larger still at smaller row counts, see
+                # docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+                # Also a real, SEPARATE effect at smaller scale: for an
+                # original population in roughly (10,000, 15,000] rows, the
+                # reference fit's own 'auto' decision (checked against the
+                # FULL row count) can disagree with what K=1's own folds
+                # (each ~2/3 that size) would decide. Every production
+                # population in this project (52,780-141,428 events/class) is
+                # far above both thresholds, where the DECISION at least
+                # converges regardless of this gap -- see the test asserting
+                # that specifically. Properly closing either gap (deriving
+                # the reference decision from fold size; reconciling K=1's
+                # own fold-to-fold n_iter_ spread some other way) is
+                # deliberately left as a follow-up, not attempted here.
                 ref_params = dict(self.params)
                 ref_params['early_stopping'] = 'auto'
                 X_orig = np.vstack([Xs, Xb])

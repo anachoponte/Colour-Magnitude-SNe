@@ -406,21 +406,27 @@ never intended to address.
 
 **Provenance: which commit these numbers came from, and what changed
 underneath them since.** The numbers above were first committed at
-`febe808`. Four behaviour-changing commits landed in `fit()` AFTER
+`febe808`. Five behaviour-changing commits landed in `fit()` AFTER
 `febe808` (all part of the same whole-branch review cycle, before this
 plan merged):
 
 - `0771971` — batch-order-independent replication (content-seeded RNG;
   unrelated to the numbers above) + a first attempt at controlling
-  `HistGradientBoostingClassifier`'s `early_stopping`/`min_samples_leaf`
-  (disable `early_stopping` whenever replication occurs).
+  `HistGradientBoostingClassifier`'s `early_stopping` (disable it
+  whenever replication occurs). Did NOT touch `min_samples_leaf` at all.
 - `34a8b13` — the `self.threshold` calibration-basis fix (unrelated to
   the numbers above; affects `predict()`'s operating point, not
   `probability()`/`score()`'s values).
+- `3db02d0` — the trajectory monotonicity + shared-offset-grouping fix
+  (see Mechanics above). A true no-op for the static colour-magnitude
+  schema used throughout this validation (every group is a singleton, no
+  `monotonic_groups` are ever set), so it changed `fit()`'s code path but
+  not its behaviour for the numbers reported here.
 - `d29558a` — revised the `early_stopping` fix to decide from the
   *original* (pre-replication) row count rather than "did replication
   happen", so `n_uncertainty_replicates=1` and `>1` get the same
-  `early_stopping` *flag* for the same data.
+  `early_stopping` *flag* for the same data. Also where `min_samples_leaf`
+  scaling (`20 * K`) was FIRST introduced.
 - `7298fb9` — found `d29558a`'s flag-matching insufficient:
   `HistGradientBoostingClassifier`'s internal train/validation split has
   no concept of "replica siblings", so at `K>1` near-duplicate replicas
@@ -432,8 +438,17 @@ plan merged):
   Fixed by precomputing `n_iter_` from a one-time reference fit on the
   *original* population, then fitting the replicated data with
   `early_stopping` explicitly off and `max_iter` pinned to that exact
-  value — verified on a synthetic worst-case fixture (`K=1` stops at
-  `n_iter_=43`, `K=8` is correctly pinned to `43` too, not `300`).
+  value — verified on a GENUINELY discriminating fixture (one that first
+  needed correcting itself: an earlier, overly-separable fixture passed
+  under BOTH the broken and the fixed code identically, so it could not
+  tell them apart; the corrected fixture proves discrimination directly,
+  by reconstructing the old flag-only logic on the same replicated data
+  and confirming it diverges before checking the actual fix does not).
+  Known, documented limitation under `calibrate=True` (the default):
+  `CalibratedClassifierCV`'s own cv folds each train on a different
+  subset, so `K=1` has no single canonical `n_iter_` to match in the
+  first place — the exact-match guarantee is specific to
+  `calibrate=False`; see the `KNOWN LIMITATION` comment in `fit()`.
 
 **What this means for the numbers above.** At `febe808` (and `d29558a`),
 `fit()` had no `min_samples_leaf` control at all (sklearn's own default,
@@ -459,9 +474,15 @@ not previously documented in this section.
 against the originally-reported ones (job `59049686`, commit `febe808`):**
 corner `min=0.000206` vs `0.0002`, `median=0.000478` vs `0.0005` — matching
 at the ~4-decimal precision either run can be expected to reproduce at
-(not byte-identical: noise injection's own RNG draws, and the reference
-fit itself, consume randomness that differs run to run even at fixed
-seeds once the surrounding code changes). The `n_uncertainty_replicates`
+(not byte-identical: everything here is deterministic at fixed seeds, but
+the surrounding code is not the same code any more -- content-seeded RNG
+reseeding (`0771971`), `min_samples_leaf` going from sklearn's default to
+`20 * K` (`d29558a`), and `early_stopping` going from on to off with
+`max_iter` pinned (`7298fb9`) all change WHICH rows get perturbed how and
+WHICH rows HGB holds back for its own internal validation, which is
+sufficient on its own to move a result by a few units in the 4th decimal
+even though nothing about this specific re-run was left to chance). The
+`n_uncertainty_replicates`
 sweep values likewise match to within ~0.0001 absolute at every `K`
 tested. Timing came back at `224.5s` for this re-run (vs `215.1s`
 originally, vs `274.9s` on an intermediate, now-superseded re-check under

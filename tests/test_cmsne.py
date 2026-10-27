@@ -2099,16 +2099,24 @@ print('\n=== third-pass review fix: K=1 and K=8 get IDENTICAL effective n_iter_,
 # genuinely stops early. Fixed by precomputing n_iter_ from a one-time reference fit
 # on the ORIGINAL data, then pinning the replicated fit's max_iter to that exact
 # value with early_stopping explicitly off.
-# A dedicated, cleanly-separable fixture (l2_regularization=0 -- the default 1.0
-# keeps the loss improving past max_iter=300 regardless, which would make this
-# check pass vacuously with BOTH sides just hitting the ceiling) that genuinely
-# makes early stopping fire for K=1, so the comparison below actually exercises
-# the leak this fix addresses rather than two configs that coincidentally agree
-# because neither ever stops early.
+# Fourth-pass review finding (C1): an earlier version of this fixture (gr means
+# 4 stds apart) was perfectly separable enough that validation loss plateaus
+# IDENTICALLY whether or not replica siblings leak across HGB's internal split --
+# round-2's own buggy (flag-only) code ALSO landed on the same n_iter_ there,
+# making that test unable to tell fixed from broken (verified directly: the
+# old flag-only logic, reconstructed on that fixture's own replicated data,
+# gave 43 -- the SAME as this fix's 43). This fixture (means only 0.3 apart,
+# l2_regularization=0 -- the default 1.0 keeps the loss improving past
+# max_iter=300 regardless of separation) is weakly-enough separable that the
+# leak DOES change the outcome. Rather than trust one specific seed/gap to stay
+# discriminating forever, the test PROVES it discriminates every run: it
+# reconstructs the OLD (flag-only, pre-this-fix) logic directly on the SAME
+# replicated data and asserts it actually diverges from K=1's own n_iter_,
+# before checking that the ACTUAL (fixed) code does NOT diverge.
 _niter_rng = np.random.default_rng(1)
 _n_niter = 6000
-_niter_sig = [{'gr': float(_niter_rng.normal(1.0, 0.05)), 'gr_err': 0.03} for _ in range(_n_niter)]
-_niter_bg = [{'gr': float(_niter_rng.normal(5.0, 0.05)), 'gr_err': 0.03} for _ in range(_n_niter)]
+_niter_sig = [{'gr': float(_niter_rng.normal(1.0, 0.3)), 'gr_err': 0.05} for _ in range(_n_niter)]
+_niter_bg = [{'gr': float(_niter_rng.normal(1.3, 0.3)), 'gr_err': 0.05} for _ in range(_n_niter)]
 _niter_w = np.full(_n_niter, 1e-5)
 _niter_clf_k1 = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=False,
                                  n_uncertainty_replicates=1, l2_regularization=0.0)
@@ -2116,15 +2124,65 @@ _niter_clf_k1.fit(_niter_sig, _niter_bg, _niter_w, _niter_w)
 _niter_clf_k8 = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=False,
                                  n_uncertainty_replicates=8, l2_regularization=0.0)
 _niter_clf_k8.fit(_niter_sig, _niter_bg, _niter_w, _niter_w)
-check('fixture check: early stopping genuinely fires for K=1 on this cleanly-separable '
-      'data (n_iter_ well below max_iter=300), so the comparison below is not vacuous',
+check('fixture check: early stopping genuinely fires for K=1 on this fixture '
+      '(n_iter_ well below max_iter=300), so the comparisons below are not vacuous',
       _niter_clf_k1.clf.n_iter_ < 300, _niter_clf_k1.clf.n_iter_)
-check('K=1 (no-op, sklearn\'s own \'auto\' on the original data) and K=8 (replicated, '
-      'pinned to a reference fit\'s discovered n_iter_) train for the EXACT SAME '
-      'number of effective boosting iterations on the same underlying data -- K=8 '
-      'does NOT diverge toward max_iter the way it would under a flag-only fix',
+
+from sklearn.ensemble import HistGradientBoostingClassifier as _HGBCForTest
+_niter_Xs, _ = colour_feature_matrix(_niter_sig, ['gr'], ())
+_niter_Xb, _ = colour_feature_matrix(_niter_bg, ['gr'], ())
+_niter_sigma_s = colour_feature_sigma_matrix(_niter_sig, ['gr'], ())
+_niter_sigma_b = colour_feature_sigma_matrix(_niter_bg, ['gr'], ())
+_niter_dims = np.arange(1)
+_niter_Xs_rep, _niter_ws_rep, _ = _replicate_with_uncertainty(
+    _niter_Xs, _niter_sigma_s, _niter_w, _niter_dims, 8)
+_niter_Xb_rep, _niter_wb_rep, _ = _replicate_with_uncertainty(
+    _niter_Xb, _niter_sigma_b, _niter_w, _niter_dims, 8)
+_niter_X_old = np.vstack([_niter_Xs_rep, _niter_Xb_rep])
+_niter_y_old = np.r_[np.ones(len(_niter_Xs_rep)), np.zeros(len(_niter_Xb_rep))]
+_niter_w_old = np.r_[_niter_ws_rep, _niter_wb_rep]
+_niter_old_style = _HGBCForTest(max_depth=4, learning_rate=0.1, max_iter=300, l2_regularization=0.0,
+                                random_state=0, early_stopping=True).fit(
+    _niter_X_old, _niter_y_old, sample_weight=_niter_w_old)
+check('fixture check: this fixture genuinely DISCRIMINATES -- the OLD (flag-only, '
+      'round-2) logic reconstructed on the SAME replicated data actually diverges '
+      'from K=1\'s own n_iter_, proving the leak this fix addresses is real for this '
+      'fixture (not a case where the bug and the fix coincidentally agree)',
+      _niter_old_style.n_iter_ != _niter_clf_k1.clf.n_iter_,
+      (_niter_clf_k1.clf.n_iter_, _niter_old_style.n_iter_))
+check('with the ACTUAL fix: K=1 (no-op, sklearn\'s own \'auto\' on the original data) '
+      'and K=8 (replicated, pinned to a reference fit\'s discovered n_iter_) train for '
+      'the EXACT SAME number of effective boosting iterations -- K=8 does NOT diverge '
+      'the way the reconstructed OLD logic (checked above) does on this SAME fixture',
       _niter_clf_k1.clf.n_iter_ == _niter_clf_k8.clf.n_iter_,
       (_niter_clf_k1.clf.n_iter_, _niter_clf_k8.clf.n_iter_))
+
+# calibrate=True (the actual default): CalibratedClassifierCV's own cv=3 folds each
+# train on a different ~2/3 subset, so K=1 itself has NO single canonical n_iter_ to
+# match in the first place -- its own 3 folds naturally land on 3 different values.
+# The exact-match guarantee above is therefore specific to calibrate=False; under
+# calibrate=True it reduces to a documented, weaker one (see the KNOWN LIMITATION
+# comment in fit()). What IS cleanly, deterministically true regardless -- and
+# tested here -- is that this fix's own pinning is internally CONSISTENT: every one
+# of K>1's CalibratedClassifierCV folds gets the SAME n_iter_ (all pinned to the one
+# reference value), not three different ones the way K=1's folds naturally do.
+_niter_cal_rng = np.random.default_rng(1)
+_n_niter_cal = 15000  # 15000+15000=30000 total, comfortably above both the 10k and
+                      # 15k thresholds the calibrate=True KNOWN LIMITATION concerns
+_niter_cal_sig = [{'gr': float(_niter_cal_rng.normal(1.0, 0.3)), 'gr_err': 0.05}
+                  for _ in range(_n_niter_cal)]
+_niter_cal_bg = [{'gr': float(_niter_cal_rng.normal(1.3, 0.3)), 'gr_err': 0.05}
+                 for _ in range(_n_niter_cal)]
+_niter_cal_w = np.full(_n_niter_cal, 1e-5)
+_niter_cal_clf = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=True,
+                                  n_uncertainty_replicates=8, l2_regularization=0.0)
+_niter_cal_clf.fit(_niter_cal_sig, _niter_cal_bg, _niter_cal_w, _niter_cal_w)
+_niter_cal_fold_iters = [cc.estimator.n_iter_ for cc in _niter_cal_clf.clf.calibrated_classifiers_]
+check('under calibrate=True (the actual default) at production-like scale, every '
+      'CalibratedClassifierCV fold is pinned to the IDENTICAL n_iter_ (internal '
+      'consistency of this fix\'s own pinning, regardless of the documented K=1-vs-'
+      'K>1 fold-variance limitation above)',
+      len(set(_niter_cal_fold_iters)) == 1, _niter_cal_fold_iters)
 
 _m2_clf = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
                            n_uncertainty_replicates=8, early_stopping=True)
