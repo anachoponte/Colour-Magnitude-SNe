@@ -2142,7 +2142,7 @@ _niter_X_old = np.vstack([_niter_Xs_rep, _niter_Xb_rep])
 _niter_y_old = np.r_[np.ones(len(_niter_Xs_rep)), np.zeros(len(_niter_Xb_rep))]
 _niter_w_old = np.r_[_niter_ws_rep, _niter_wb_rep]
 _niter_old_style = _HGBCForTest(max_depth=4, learning_rate=0.1, max_iter=300, l2_regularization=0.0,
-                                random_state=0, early_stopping=True).fit(
+                                min_samples_leaf=160, random_state=0, early_stopping=True).fit(
     _niter_X_old, _niter_y_old, sample_weight=_niter_w_old)
 check('fixture check: this fixture genuinely DISCRIMINATES -- the OLD (flag-only, '
       'round-2) logic reconstructed on the SAME replicated data actually diverges '
@@ -2178,6 +2178,10 @@ _niter_cal_clf = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=
                                   n_uncertainty_replicates=8, l2_regularization=0.0)
 _niter_cal_clf.fit(_niter_cal_sig, _niter_cal_bg, _niter_cal_w, _niter_cal_w)
 _niter_cal_fold_iters = [cc.estimator.n_iter_ for cc in _niter_cal_clf.clf.calibrated_classifiers_]
+check('fixture check: early stopping genuinely fires under calibrate=True too (fold '
+      'n_iter_ well below max_iter=300), so the consistency check below could not '
+      'pass merely because every fold trivially hit the same ceiling',
+      _niter_cal_fold_iters[0] < 300, _niter_cal_fold_iters)
 check('under calibrate=True (the actual default) at production-like scale, every '
       'CalibratedClassifierCV fold is pinned to the IDENTICAL n_iter_ (internal '
       'consistency of this fix\'s own pinning, regardless of the documented K=1-vs-'

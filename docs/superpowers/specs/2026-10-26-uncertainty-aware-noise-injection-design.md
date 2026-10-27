@@ -450,9 +450,9 @@ plan merged):
   first place — the exact-match guarantee is specific to
   `calibrate=False`; see the `KNOWN LIMITATION` comment in `fit()`.
 
-**What this means for the numbers above.** At `febe808` (and `d29558a`),
-`fit()` had no `min_samples_leaf` control at all (sklearn's own default,
-20, applied to the *replicated* row count), and the `n_iter_`-divergence
+**What this means for the numbers above.** At `febe808`, `fit()` had no
+`min_samples_leaf` control at all (sklearn's own default, 20, applied to
+the *replicated* row count), and the `n_iter_`-divergence
 mechanism `7298fb9` fixes was present in principle at every `K>1` in the
 sweep — not as an asymmetry introduced later against `K=1` (an earlier,
 inaccurate framing in this plan's own PR description said exactly that;
