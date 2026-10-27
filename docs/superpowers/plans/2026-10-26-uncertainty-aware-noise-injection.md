@@ -17,7 +17,8 @@
 - **Two different replication injection points, never conflated.** The tree replicates the FULL balanced population once, in `fit()`, before training. The KDE replicates ONLY the already-capped per-pattern subset, inside `_kde_subset_for_pattern`, AFTER its existing finite-filter+cap step (commit `1fe0eb3`'s fix). Replicating the KDE's raw population before capping would reintroduce that exact bug.
 - **`_store_kde_training_data` keeps storing the ORIGINAL, un-replicated population.** Replication for the KDE side happens lazily per pattern, not globally at storage time.
 - **`peakmag_fit_err` is explicitly out of scope.** Do not attempt to propagate uncertainty for `peakmag_fit` (a parabola-fit quantity, not a single observation). A classifier using `magnitude_feature='peakmag_fit'` simply has nothing to perturb that one feature with, which is the correct, intentional fallback (not a bug to fix).
-- **Tree-side threshold-setting and `train_prior` stay on the ORIGINAL, un-replicated arrays** (`self.clf.predict_proba(Xb)` for `self.threshold`, `ws.sum()`/`wb.sum()` for `train_prior`) -- only the actual tree-training call (`CalibratedClassifierCV(...).fit(...)` / `base.fit(...)`) uses the replicated expansion.
+- **`train_prior` stays on the ORIGINAL, un-replicated arrays** (`ws.sum()`/`wb.sum()`) -- it is a plain weight-sum with no dependence on the scoring pipeline, so replication has nothing to do with it.
+- **`self.threshold` MUST be calibrated against the same quantity `predict()` compares it to -- `self.score()`, not raw `self.clf.predict_proba(Xb)`.** (Correction, post-Task-6-review: the plan originally said threshold-setting should stay on `self.clf.predict_proba(Xb)` like `train_prior`. That was wrong once Task 3 redefined `self.score()` to be replica-averaged: `predict()` at classifier.py:708 does `self.score(events) >= self.threshold`, so calibrating `self.threshold` against the OLD, non-averaged `predict_proba` quantity silently breaks `target_fpr`'s operational meaning -- measured empirically at a ~2.3x gap (nominal `target_fpr=0.10` realized as FPR=0.043 via `self.score()`, vs FPR=0.127 via raw `predict_proba`) once real uncertainty data is present. Fix: compute `sb = self.score(background_events)` (the full background events, with their own sigma, so query-side replication/averaging is applied exactly as `predict()` will apply it) and keep `self.threshold = weighted_quantile(sb, wb, q=1-target_fpr)` otherwise unchanged. No circularity: `self.score()` does not depend on `self.threshold`, only `predict()` does, and by the point threshold-setting runs in `fit()`, `self.clf` and the KDE training-data store are already populated.)
 
 **User decisions (already made):**
 - Monte Carlo noise-injection replication (Approach A), not exact analytic KDE-bandwidth convolution or query-time-only averaging -- "go with A".
@@ -538,7 +539,8 @@ git commit -m "feat: add uncertainty-aware noise-injection primitives"
 **Acceptance Criteria:**
 - [ ] `ColourClassifier(..., n_uncertainty_replicates=DEFAULT_N_UNCERTAINTY_REPLICATES)` stores `self.n_uncertainty_replicates`.
 - [ ] `fit()` builds `sigma_s`/`sigma_b` via `colour_feature_sigma_matrix`, balances `ws`/`wb` exactly as before, THEN replicates the balanced `Xs`/`ws`/`Xb`/`wb` via `_replicate_with_uncertainty` before calling `CalibratedClassifierCV(...).fit(...)`/`base.fit(...)`.
-- [ ] `self.threshold` (via `self.clf.predict_proba(Xb)`) and `self.train_prior` (via `ws.sum()`/`wb.sum()`) use the ORIGINAL, un-replicated `Xb`/`ws`/`wb` -- unchanged from before this task.
+- [ ] `self.train_prior` (via `ws.sum()`/`wb.sum()`) uses the ORIGINAL, un-replicated `ws`/`wb` -- unchanged from before this task.
+- [ ] `self.threshold` is calibrated via `self.score(background_events)` (the SAME quantity `predict()` later compares it to), not raw `self.clf.predict_proba(Xb)` -- see the corrected Global Constraint on this. With no `*_err` data, `self.score()` reduces to plain `predict_proba`, so this is still a byte-identical no-op for every pre-existing fixture/test.
 - [ ] `score()` replicates each query event from ITS OWN `*_err` fields and averages `self.clf.predict_proba` over its replicas; with no `*_err` data, this is numerically identical to today's `self.clf.predict_proba(X)[:, 1]`.
 - [ ] A fitted classifier on a population WITH real, large, synthetic `gr_err` values trains and predicts without error, producing a finite, calibrated-looking output (sanity check, not a deep ML-quality test).
 - [ ] The full pre-existing test suite passes unchanged (no `*_err` fields anywhere in existing fixtures -> every `fit()`/`score()` call is a byte-identical no-op under replication).
@@ -727,10 +729,15 @@ with:
         else:
             self.clf = base.fit(X, y, sample_weight=w)
 
-        # Threshold-setting stays on the REAL, un-replicated background -- this is
-        # calibration against the actual rate-weighted population, not a training
-        # input, so it should not see synthetic noise copies.
-        sb = self.clf.predict_proba(Xb)[:, 1]
+        # Threshold-setting is calibrated against self.score() -- the SAME quantity
+        # predict() compares it to -- not raw predict_proba. Calibrating against a
+        # different quantity than the one actually thresholded silently breaks
+        # target_fpr's operational meaning once query-side replication/averaging
+        # is in play (see Global Constraints). background_events is the original,
+        # un-replicated event list; self.score() does its own query-side
+        # replication from each event's *_err fields internally, exactly as it
+        # will for any future predict() call.
+        sb = self.score(background_events)
         self.threshold = float(weighted_quantile(sb, wb, q=1.0 - self.target_fpr))
         self._store_kde_training_data(Xs, ws, Xb, wb, sigma_s, sigma_b)
         return self
