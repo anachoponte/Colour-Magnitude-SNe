@@ -243,6 +243,31 @@ this investigation):
   Validation reports the *total* combined overhead, not just this
   increment, since what matters for real use (e.g. `rank()`-ing a
   candidate list) is the full cost, not any one piece of it.
+- **`probability()`/`rank()` query-side cost scales ~K², not K**: each
+  query event is replicated into `K` query-replicas
+  (`_blend_with_local_density`), and each of those `K` replicas is then
+  evaluated against a KDE training subset that is *itself* `K`-times
+  larger (`_kde_subset_for_pattern`'s own replication) — `K` query
+  replicas × a `K`-times-larger kernel sum each, not `K` of either alone.
+  Measured ~30x slower at the default `K=8` on a 9k-event/100-query
+  workload (second-pass review finding, 2026-10-27) — a real cost worth
+  knowing before `rank()`-ing a large real candidate list, not a defect
+  in the design (both replication points are individually necessary; see
+  Mechanics above).
+
+**A subtler statistical effect, not a bug:** projecting independently-
+perturbed cumulative-minimum columns (trajectory `peakmag{suffix}`,
+see `TrajectoryClassifier.monotonic_column_groups`) back onto the
+monotonic manifold via `np.minimum.accumulate` introduces a mild
+systematic *downward* bias on later-grid-step `peakmag` replicas
+relative to the unperturbed value — the minimum of several independent
+noisy draws skews lower (brighter) than any single draw. This is the
+statistically *correct* behaviour (it is exactly what would happen if
+every underlying epoch's magnitude were perturbed and the running
+minimum recomputed from scratch), not an artefact of this
+implementation's shortcut of perturbing the already-derived cumulative
+column directly — but it is real and non-obvious enough to flag here
+(second-pass review finding, 2026-10-27).
 
 ## Testing and validation plan
 

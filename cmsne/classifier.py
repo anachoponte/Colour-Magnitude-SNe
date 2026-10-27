@@ -163,7 +163,7 @@ def _row_content_seed(base_seed, x_row, sigma_row):
     return int.from_bytes(digest[:8], 'little') % (2 ** 32)
 
 
-def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0):
+def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0, monotonic_groups=None):
     """Expand each row of ``X`` into ``n_replicates`` noisy copies, perturbed
     per dimension in ``dims`` by that row's own ``sigma`` (non-finite or
     non-positive sigma leaves that dimension exactly as-is for every
@@ -180,6 +180,35 @@ def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0):
     must agree for the same event ``b``, which a single shared RNG stream
     cannot guarantee (a row's draws would otherwise depend on how many other
     perturbable rows preceded it in that specific call).
+
+    Within one row, perturbable dimensions sharing the EXACT SAME
+    ``(value, sigma)`` pair draw a single shared noise offset instead of
+    independent ones -- two columns this close are almost certainly the
+    same underlying physical measurement (e.g. two trajectory grid steps
+    whose nearest-detection window picked the identical observation; see
+    docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md),
+    and treating them as independently-remeasured would let them drift
+    apart under perturbation when the real uncertainty is perfectly
+    correlated between them. For the static multicolour schema, where
+    columns are independent real-valued measurements, two columns
+    essentially never land on bit-identical floats, so every group is a
+    singleton and this is a true no-op (same RNG consumption order as
+    drawing independently, since groups are visited in each dimension's
+    first-occurrence order).
+
+    :param monotonic_groups: optional list of column-index sequences (each
+        in the order a per-replica running minimum must hold along, e.g.
+        chronological grid-step order for a cumulative-best magnitude).
+        After perturbation, each sequence is replaced by its own running
+        minimum per replica (``np.minimum.accumulate``) -- independently
+        perturbing columns that are really one running-minimum trajectory
+        can otherwise produce a physically impossible feature vector (a
+        "cumulative best" that gets fainter over time). ``None`` (the
+        default, every pre-existing caller) applies no such constraint.
+        NaN entries (e.g. a not-yet-revealed future step) are untouched by
+        earlier, finite entries -- ``np.minimum`` propagates NaN only
+        forward along the sequence, matching the one-directional
+        causal/chronological order these groups are given in.
 
     :return: ``(X_rep, w_rep, event_id)``. ``event_id[k]`` is the index into
         the ORIGINAL ``X``/``weights`` that ``X_rep[k]`` came from -- needed
@@ -209,8 +238,16 @@ def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0):
             continue
         rng = np.random.default_rng(_row_content_seed(seed, X[i], sigma[i]))
         sl = slice(i * n_replicates, (i + 1) * n_replicates)
+        groups = {}
         for d in perturbable_dims:
-            X_rep[sl, d] += rng.normal(0.0, sigma[i, d], size=n_replicates)
+            groups.setdefault((X[i, d], sigma[i, d]), []).append(d)
+        for group_dims in groups.values():
+            offset = rng.normal(0.0, sigma[i, group_dims[0]], size=n_replicates)
+            for d in group_dims:
+                X_rep[sl, d] += offset
+    if monotonic_groups:
+        for group in monotonic_groups:
+            X_rep[:, group] = np.minimum.accumulate(X_rep[:, group], axis=1)
     w_rep = np.repeat(weights, n_replicates) / n_replicates
     return X_rep, w_rep, event_id
 
@@ -484,6 +521,26 @@ class ColourClassifier:
         self.kde_max_events = kde_max_events
         self.kde_min_ess = kde_min_ess
         self.n_uncertainty_replicates = n_uncertainty_replicates
+        # Column-name groups (e.g. a cumulative-best magnitude's grid-step
+        # sequence) that must stay non-increasing per noise-injection replica
+        # -- see :func:`_replicate_with_uncertainty`'s ``monotonic_groups``.
+        # ``None`` here (the only value this base class ever sets) means no
+        # such structure exists in a plain colour/magnitude feature vector;
+        # :class:`cmsne.trajectory.TrajectoryClassifier` sets this to its own
+        # per-step magnitude keys in ITS ``__init__``, inheriting every other
+        # method (``fit``/``score``/the KDE blend) unchanged.
+        self.monotonic_column_groups = None
+
+    def _resolve_monotonic_groups(self):
+        """``self.monotonic_column_groups`` (column NAMES, set once in
+        ``__init__`` -- see there) resolved to column INDICES into
+        ``self.columns`` (only known after :meth:`fit` runs). ``None`` stays
+        ``None`` (the base class's own default, and every call site's
+        no-op)."""
+        if not self.monotonic_column_groups:
+            return None
+        return [[self.columns.index(name) for name in group]
+                for group in self.monotonic_column_groups]
 
     def fit(self, signal_events, background_events,
             signal_weights=None, background_weights=None):
@@ -500,6 +557,7 @@ class ColourClassifier:
         self.columns = cols
         sigma_s = colour_feature_sigma_matrix(signal_events, self.keys, self.extra)
         sigma_b = colour_feature_sigma_matrix(background_events, self.keys, self.extra)
+        monotonic_groups = self._resolve_monotonic_groups()
 
         ws = np.ones(len(Xs)) if signal_weights is None else np.asarray(signal_weights, float)
         wb = np.ones(len(Xb)) if background_weights is None else np.asarray(background_weights, float)
@@ -512,9 +570,9 @@ class ColourClassifier:
         # per pattern, after its own kde_max_events cap (Task 4).
         dims_all = np.arange(Xs.shape[1])
         Xs_rep, ws_rep, _ = _replicate_with_uncertainty(
-            Xs, sigma_s, ws, dims_all, self.n_uncertainty_replicates)
+            Xs, sigma_s, ws, dims_all, self.n_uncertainty_replicates, monotonic_groups=monotonic_groups)
         Xb_rep, wb_rep, _ = _replicate_with_uncertainty(
-            Xb, sigma_b, wb, dims_all, self.n_uncertainty_replicates)
+            Xb, sigma_b, wb, dims_all, self.n_uncertainty_replicates, monotonic_groups=monotonic_groups)
 
         X = np.vstack([Xs_rep, Xb_rep])
         y = np.r_[np.ones(len(Xs_rep)), np.zeros(len(Xb_rep))]
@@ -637,7 +695,8 @@ class ColourClassifier:
         sigma = colour_feature_sigma_matrix(events, self.keys, self.extra)
         dims_all = np.arange(X.shape[1])
         X_rep, _, event_id = _replicate_with_uncertainty(
-            X, sigma, np.ones(len(X)), dims_all, self.n_uncertainty_replicates)
+            X, sigma, np.ones(len(X)), dims_all, self.n_uncertainty_replicates,
+            monotonic_groups=self._resolve_monotonic_groups())
         p_rep = self.clf.predict_proba(X_rep)[:, 1]
         counts = np.bincount(event_id, minlength=len(X))
         sums = np.bincount(event_id, weights=p_rep, minlength=len(X))
@@ -685,6 +744,7 @@ class ColourClassifier:
         """
         X, _ = colour_feature_matrix(events, self.keys, self.extra)
         sigma = colour_feature_sigma_matrix(events, self.keys, self.extra)
+        monotonic_groups = self._resolve_monotonic_groups()
         out = np.array(p_tree, dtype=float, copy=True)
         for i in range(len(events)):
             x = X[i]
@@ -695,7 +755,7 @@ class ColourClassifier:
             subset = self._kde_subset_for_pattern(pattern, dims)
             x_rep, _, _ = _replicate_with_uncertainty(
                 x[np.newaxis, :], sigma[i][np.newaxis, :], np.array([1.0]),
-                dims, self.n_uncertainty_replicates)
+                dims, self.n_uncertainty_replicates, monotonic_groups=monotonic_groups)
             blended_vals = []
             for xr in x_rep:
                 p_kde, ess_sig, ess_bg = _local_density_ratio(
@@ -745,10 +805,13 @@ class ColourClassifier:
             sigma_s_cap = self._kde_sigma_s[finite_s_idx[chosen_s]]
             sigma_b_cap = self._kde_sigma_b[finite_b_idx[chosen_b]]
 
+            monotonic_groups = self._resolve_monotonic_groups()
             Xs_rep, ws_rep, event_id_s = _replicate_with_uncertainty(
-                Xs_cap, sigma_s_cap, ws_cap, dims, self.n_uncertainty_replicates)
+                Xs_cap, sigma_s_cap, ws_cap, dims, self.n_uncertainty_replicates,
+                monotonic_groups=monotonic_groups)
             Xb_rep, wb_rep, event_id_b = _replicate_with_uncertainty(
-                Xb_cap, sigma_b_cap, wb_cap, dims, self.n_uncertainty_replicates)
+                Xb_cap, sigma_b_cap, wb_cap, dims, self.n_uncertainty_replicates,
+                monotonic_groups=monotonic_groups)
 
             self._kde_pattern_cache[pattern] = _KDEPatternSubset(
                 Xs_rep, ws_rep, Xb_rep, wb_rep,

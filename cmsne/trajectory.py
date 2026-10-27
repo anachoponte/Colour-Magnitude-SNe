@@ -196,6 +196,15 @@ class TrajectoryClassifier(ColourClassifier):
                          target_fpr=target_fpr, calibrate=calibrate, **hgb)
         self.magnitude_feature = None
         self.extra = TRAJECTORY_MAGNITUDE_KEYS
+        # peakmag at each grid step is a CUMULATIVE BEST (running minimum) over
+        # time, so noise-injection replicas must stay non-increasing across
+        # TRAJECTORY_MAGNITUDE_KEYS' chronological order too -- independently
+        # perturbing each step's column could otherwise produce a physically
+        # impossible "cumulative best got fainter" feature vector (see
+        # docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+        # ColourClassifier's own fit/score/KDE blend methods are inherited
+        # UNCHANGED -- only this one attribute differs from the base class.
+        self.monotonic_column_groups = [list(TRAJECTORY_MAGNITUDE_KEYS)]
 
     def roc_curve_by_step(self, signal_events, background_events,
                           signal_weights=None, background_weights=None,

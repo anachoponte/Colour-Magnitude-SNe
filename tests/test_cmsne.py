@@ -1352,6 +1352,44 @@ _rwu_Xr3, _, _ = _replicate_with_uncertainty(np.array([[10.0, 0.0]]), _rwu_sigma
 check('_replicate_with_uncertainty replicas scatter with roughly the given sigma',
       abs(np.std(_rwu_Xr3[:, 0]) - 5.0) < 0.5, np.std(_rwu_Xr3[:, 0]))
 
+# Second-pass review finding: two columns of the SAME row that are the literal same
+# underlying observation (e.g. two trajectory grid steps whose nearest-detection
+# window picked the identical measurement) end up with IDENTICAL (value, sigma) by
+# construction -- they must move together under perturbation (one shared noise
+# draw), not drift apart as if independently measured.
+_dup_X = np.array([[3.0, 3.0, 7.0]])       # cols 0,1 are the SAME duplicated observation; col 2 is unrelated
+_dup_sigma = np.array([[0.5, 0.5, 0.5]])   # identical sigma too (same underlying error)
+_dup_Xr, _, _ = _replicate_with_uncertainty(_dup_X, _dup_sigma, np.array([1.0]), np.array([0, 1, 2]), 50, seed=7)
+check('_replicate_with_uncertainty draws the SAME noise offset for two columns sharing '
+      'the identical (value, sigma) pair (the duplicate-observation case)',
+      np.array_equal(_dup_Xr[:, 0] - _dup_X[0, 0], _dup_Xr[:, 1] - _dup_X[0, 1]))
+check('_replicate_with_uncertainty still draws INDEPENDENT noise for an unrelated column '
+      '(not grouped just because it shares the same sigma value)',
+      not np.allclose(_dup_Xr[:, 0] - _dup_X[0, 0], _dup_Xr[:, 2] - _dup_X[0, 2]))
+check('_replicate_with_uncertainty grouping does not change the no-duplicate case: two '
+      'genuinely distinct values (even with equal sigma) scatter independently, matching '
+      'pre-grouping behaviour for the static schema (values essentially never collide)',
+      np.std(_dup_Xr[:, 2]) > 0.1, np.std(_dup_Xr[:, 2]))
+
+# Second-pass review finding: a cumulative-minimum column sequence (e.g. trajectory
+# peakmag at increasing Δt) must stay non-increasing per replica even after
+# independent perturbation -- a classifier should never see a physically impossible
+# "cumulative best got fainter" feature vector.
+_mono_X = np.array([[22.0, 21.0, 20.0]])    # already non-increasing (brighter over time)
+_mono_sigma = np.array([[0.5, 0.5, 0.5]])
+_mono_Xr, _, _ = _replicate_with_uncertainty(
+    _mono_X, _mono_sigma, np.array([1.0]), np.array([0, 1, 2]), 500, seed=9,
+    monotonic_groups=[[0, 1, 2]])
+check('_replicate_with_uncertainty with monotonic_groups keeps every replica non-increasing '
+      'across the grouped columns, even though each was perturbed independently',
+      np.all(np.diff(_mono_Xr, axis=1) <= 0))
+_mono_Xr_nogroup, _, _ = _replicate_with_uncertainty(
+    _mono_X, _mono_sigma, np.array([1.0]), np.array([0, 1, 2]), 500, seed=9)
+check('without monotonic_groups (the default, every existing caller), replicas are free to '
+      'violate the ordering -- proving the constraint above comes from monotonic_groups, '
+      'not some other implicit property of this data/seed',
+      not np.all(np.diff(_mono_Xr_nogroup, axis=1) <= 0))
+
 # The ESS-inflation bug, and the fix: 5 replicas of ONE real point must not look
 # like 5 independent points.
 _grp_event_id = np.array([0, 0, 0, 0, 0])
@@ -1818,6 +1856,85 @@ _tc_unc_query[0][f'{_tc_key}_err'] = 0.2
 _traj_probe = _traj_clf_unc.probability(_tc_unc_query)
 check('TrajectoryClassifier inherits noise injection with no extra code',
       np.all(np.isfinite(_traj_probe)) and np.all((_traj_probe >= 0) & (_traj_probe <= 1)), _traj_probe)
+
+print('\n=== second-pass review fix: trajectory monotonicity + duplicate-observation '
+      'correlation, on REAL event_trajectory output ===')
+# A light curve engineered so trigger+0d and trigger+3d's +-5d windows BOTH pick the
+# SAME single g@1/r@1 observation pair (window=5 heavily overlaps a 3-day grid gap,
+# unlike event_multicolour's disjoint trigger/trigger+evolution_days snapshots) --
+# the real-data mechanism the second-pass review flagged, not a contrived case.
+# A brighter detection at day 12 (trigger+14's window) and brighter still at day 35
+# (trigger+30's window) exercises genuine cumulative-best (peakmag) improvement.
+_lct_dup = _LCm([1, 1, 12, 35, 35], ['g', 'r', 'g', 'g', 'r'],
+                [22.0, 21.0, 20.0, 19.0, 19.5],
+                [0.05, 0.08, 0.03, 0.02, 0.025])
+_ft_dup = traj.event_trajectory(_lct_dup, grid=traj.TRAJECTORY_GRID, window=5.0)
+check('fixture check: gr_d0 and gr_d3 really do come from the identical underlying '
+      'observation pair (both value AND error match exactly), confirming this is the '
+      'real mechanism, not assumed',
+      _ft_dup['gr_d0'] == _ft_dup['gr_d3'] and _ft_dup['gr_d0_err'] == _ft_dup['gr_d3_err'],
+      (_ft_dup['gr_d0'], _ft_dup['gr_d3'], _ft_dup['gr_d0_err'], _ft_dup['gr_d3_err']))
+check('fixture check: peakmag genuinely improves (gets brighter) over the grid, so the '
+      'monotonicity check below is not vacuous',
+      _ft_dup['peakmag_d60'] < _ft_dup['peakmag_d14'] < _ft_dup['peakmag_d0'],
+      (_ft_dup['peakmag_d0'], _ft_dup['peakmag_d14'], _ft_dup['peakmag_d60']))
+
+_dup_X_full, _dup_cols = colour_feature_matrix([_ft_dup], TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS)
+_dup_sigma_full = colour_feature_sigma_matrix([_ft_dup], TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS)
+_dup_mono_groups = [[_dup_cols.index(k) for k in TRAJECTORY_MAGNITUDE_KEYS]]
+_dup_Xrep, _, _ = _replicate_with_uncertainty(
+    _dup_X_full, _dup_sigma_full, np.array([1.0]), np.arange(_dup_X_full.shape[1]), 500, seed=13,
+    monotonic_groups=_dup_mono_groups)
+_gr_d0_idx, _gr_d3_idx = _dup_cols.index('gr_d0'), _dup_cols.index('gr_d3')
+check('on REAL event_trajectory output run through _replicate_with_uncertainty: the two '
+      'columns sharing the identical underlying observation produce IDENTICAL perturbed '
+      'values across every one of 500 replicas (not just similar -- exactly equal, since '
+      'they share one noise draw)',
+      np.array_equal(_dup_Xrep[:, _gr_d0_idx], _dup_Xrep[:, _gr_d3_idx]))
+_mag_cols_idx = [_dup_cols.index(k) for k in TRAJECTORY_MAGNITUDE_KEYS]
+check('on REAL event_trajectory output: every one of 500 replicas stays non-increasing '
+      'across the cumulative-peakmag grid-step sequence, even though peakmag_d14/peakmag_d30 '
+      'etc. were perturbed independently from DIFFERENT underlying observations',
+      np.all(np.diff(_dup_Xrep[:, _mag_cols_idx], axis=1) <= 0))
+
+# End-to-end smoke test: TrajectoryClassifier trained/queried on a population built from
+# REAL event_trajectory calls (not the toy single-column _tc_event fixture), confirming
+# the fixes above compose correctly through fit()/probability(), not just in isolation.
+def _mk_real_traj_event(rng, g_mean, r_mean):
+    # One g/r pair near each of the 5 grid steps (0, 3, 14, 30, 60d post-trigger,
+    # each within window=5.0) so every gr_d*/peakmag_d* column is finite for every
+    # event -- an all-NaN column crashes HistGradientBoostingClassifier's binning
+    # (same gotcha the existing _tc_event-based test already works around).
+    offsets = [0.0, 13.0, 31.0, 61.0]
+    days, filters, mags, errs = [], [], [], []
+    for k, off in enumerate(offsets):
+        jitter = float(rng.uniform(0, 1.5))
+        days += [off + jitter, off + jitter]
+        filters += ['g', 'r']
+        mags += [float(rng.normal(g_mean - 0.3 * k, 0.2)), float(rng.normal(r_mean - 0.3 * k, 0.2))]
+        errs += [float(abs(rng.normal(0.1, 0.03))), float(abs(rng.normal(0.1, 0.03)))]
+    return traj.event_trajectory(_LCm(days, filters, mags, errs),
+                                 grid=traj.TRAJECTORY_GRID, window=5.0)
+_rng_real_traj = np.random.default_rng(17)
+_real_traj_sig = [_mk_real_traj_event(_rng_real_traj, 21.0, 20.0) for _ in range(60)]
+_real_traj_bg = [_mk_real_traj_event(_rng_real_traj, 22.0, 20.5) for _ in range(60)]
+_real_traj_w = np.full(60, 1e-5)
+# Restricted to the gr-trajectory columns -- this fixture's light curves only ever
+# detect g/r, so every OTHER band pair's column is entirely NaN across the whole
+# population, which crashes HistGradientBoostingClassifier's binning step (same
+# known gotcha as the existing "inherits the sparse-corner blend" test above).
+# self.monotonic_column_groups still covers the full TRAJECTORY_MAGNITUDE_KEYS
+# regardless of this `keys` restriction (set unconditionally from self.extra in
+# __init__), so the monotonicity fix is still exercised end to end here too.
+_gr_traj_keys = [f'gr{traj._step_suffix(d)}' for d in traj.TRAJECTORY_GRID]
+_real_traj_clf = TrajectoryClassifier(keys=_gr_traj_keys, n_uncertainty_replicates=4)
+_real_traj_clf.fit(_real_traj_sig, _real_traj_bg, _real_traj_w, _real_traj_w)
+_real_traj_probe = _real_traj_clf.probability(_real_traj_sig[:5])
+check('TrajectoryClassifier fit+probability on a population of REAL event_trajectory '
+      'events (with real duplicate-observation and cumulative-peakmag structure) produces '
+      'finite, in-range output end to end',
+      np.all(np.isfinite(_real_traj_probe)) and np.all((_real_traj_probe >= 0) & (_real_traj_probe <= 1)),
+      _real_traj_probe.tolist())
 
 
 print('\n=== final review fix: _replicate_with_uncertainty is batch/row-order independent ===')
