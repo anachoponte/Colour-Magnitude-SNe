@@ -112,22 +112,26 @@ def first_detection_per_band(lightcurve, trigger):
     return fd_day, fd_mag
 
 
-def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
+def event_multicolour(lightcurve, evolution_days=15.0, window=5.0, min_detections=5):
     """Colour feature vector for one light curve.
 
     The trigger epoch is the **first detection** in any band. Colours are formed at
     the trigger and ``evolution_days`` observer-days later; a colour is NaN when
     either band was not observed within ``window`` of that epoch.
 
+    :param min_detections: minimum number of detected epochs (finite magnitude,
+        i.e. SNR > 5) required across all bands. Defaults to 5, matching the
+        detection threshold in Ponte Pérez et al. (2025).
     :return: dict of colours (``gr``, ``ri``, ...), their later-epoch counterparts
         (``gr_d``, ...), individual band magnitudes and errors, the brightest
         observed magnitude ``peakmag``, the trigger epoch, and how many bands
-        were seen at trigger (``n_bands``); or ``None`` if nothing was detected.
+        were seen at trigger (``n_bands``); or ``None`` if fewer than
+        ``min_detections`` visits were detected.
     """
     days = np.asarray(lightcurve.obs_days, dtype=float)
     mag = np.asarray(lightcurve.obs_mag, dtype=float)
     det = np.isfinite(mag)
-    if not np.any(det):
+    if np.sum(det) < min_detections:
         return None
 
     trigger = float(days[det].min())
@@ -186,17 +190,23 @@ class MultiColourGenerator:
 
     :param source: sncosmo source name (``'salt3'`` for SN Ia, or a Nugent
         core-collapse template such as ``'nugent-sn2p'``).
+    :param min_detections: minimum detected visits required (default 5, matching
+        Ponte Pérez et al. 2025).
     """
 
-    def __init__(self, source='salt3'):
+    def __init__(self, source='salt3', min_detections=5):
         self.source = source
+        self.min_detections = min_detections
         self.is_ia = (source == 'salt3')
 
     def generate_one(self, z, abs_mag, magnification, times, ra, dec,
-                     mjd_high=None, evolution_days=15.0, window=5.0, verbose=False):
+                     mjd_high=None, evolution_days=15.0, window=5.0,
+                     min_detections=None, verbose=False):
         """One event through the cadence. ``magnification`` = 1 for an unlensed
         event. Returns the colour feature dict (with ``z``, ``magnification``
         attached) or ``None`` if the event is never detected."""
+        if min_detections is None:
+            min_detections = self.min_detections
         if mjd_high is None:
             mjd_high = survey_dates[3]
 
@@ -223,14 +233,14 @@ class MultiColourGenerator:
         if lc is None:
             return None
 
-        feat = self._event_features(lc, evolution_days, window)
+        feat = self._event_features(lc, evolution_days, window, min_detections=min_detections)
         if feat is None:
             return None
         feat['z'] = z
         feat['magnification'] = magnification
         return feat
 
-    def _event_features(self, lc, evolution_days, window):
+    def _event_features(self, lc, evolution_days, window, min_detections=5):
         """Hook for the feature dict extracted from one light curve.
 
         Overridden by :class:`cmsne.trajectory.TrajectoryGenerator` to extract
@@ -238,12 +248,12 @@ class MultiColourGenerator:
         trigger+evolution_days) vector. Kept as a method (not a free function
         call) so subclasses can swap the extraction logic without duplicating
         :meth:`generate_one`'s OpSim/model plumbing."""
-        return event_multicolour(lc, evolution_days, window)
+        return event_multicolour(lc, evolution_days, window, min_detections=min_detections)
 
     def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
                       magnification_range=(2.0, 50.0),
                       mjd_range=(survey_dates[0], survey_dates[3]),
-                      mjd_high=None, verbose=False):
+                      mjd_high=None, min_detections=None, verbose=False):
         """Draw ``n`` events of one class and keep the detected ones.
 
         :param kind: ``'lensed'`` applies a magnification drawn from
@@ -251,6 +261,8 @@ class MultiColourGenerator:
         :param z_range: redshift sampling range for this source/class.
         :param abs_mag_avg, abs_mag_sig: peak absolute-magnitude distribution.
         """
+        if min_detections is None:
+            min_detections = self.min_detections
         lensed = (kind == 'lensed')
         pop = []
         for _ in range(n):
@@ -262,7 +274,8 @@ class MultiColourGenerator:
             if len(ra) == 0:
                 continue
             r = self.generate_one(z, abs_mag, mu, times, ra[0], dec[0],
-                                  mjd_high=mjd_high, verbose=verbose)
+                                  mjd_high=mjd_high, min_detections=min_detections,
+                                  verbose=verbose)
             if r is not None:
                 pop.append(r)
         return pop

@@ -85,7 +85,7 @@ def resolve_magnitude_key(pair_key, day, mag_mode='matched', mag_band='auto', sa
     return candidate, label
 
 
-def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
+def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0, min_detections=5):
     """N-point colour + cumulative-brightness trajectory for one light curve.
 
     At each ``Δt`` in ``grid``, records the ugrizy adjacent-band colours
@@ -106,16 +106,20 @@ def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
     matching measurement-uncertainty companions (``'*_err'``), allowing
     band-matched CMD features (e.g. r vs g-r).
 
+    :param min_detections: minimum number of detected epochs (finite magnitude,
+        i.e. SNR > 5) required across all bands. Defaults to 5, matching the
+        detection threshold in Ponte Pérez et al. (2025).
     :return: dict with keys ``'{colour}{suffix}'``/``'{colour}{suffix}_err'``,
         ``'peakmag{suffix}'``/``'peakmag{suffix}_err'``,
         ``'{b}{suffix}'``/``'{b}{suffix}_err'``, and
         ``'peakmag_{b}{suffix}'``/``'peakmag_{b}{suffix}_err'`` for every grid step,
-        plus ``trigger_day``; or ``None`` if nothing was ever detected.
+        plus ``trigger_day``; or ``None`` if fewer than ``min_detections`` visits
+        were detected.
     """
     days = np.asarray(lightcurve.obs_days, dtype=float)
     mag = np.asarray(lightcurve.obs_mag, dtype=float)
     det = np.isfinite(mag)
-    if not np.any(det):
+    if np.sum(det) < min_detections:
         return None
 
     trigger = float(days[det].min())
@@ -174,8 +178,7 @@ def reveal_up_to(event, k, grid=TRAJECTORY_GRID):
     uncertainty either.
 
     :param k: last visible grid-step index (0-based).
-    :return: a new dict; ``event`` itself is not modified.
-    """
+    :return: a new dict; ``event`` itself is not modified."""
     n_steps = len(grid)
     cols_per_step = len(TRAJECTORY_COLOUR_KEYS) // n_steps
     e = dict(event)
@@ -204,15 +207,15 @@ class TrajectoryGenerator(MultiColourGenerator):
     only the per-event feature extraction differs.
     """
 
-    def __init__(self, source='salt3', grid=TRAJECTORY_GRID):
-        super().__init__(source)
+    def __init__(self, source='salt3', grid=TRAJECTORY_GRID, min_detections=5):
+        super().__init__(source, min_detections=min_detections)
         self.grid = grid
 
-    def _event_features(self, lc, evolution_days, window):
-        return event_trajectory(lc, self.grid, window)
+    def _event_features(self, lc, evolution_days, window, min_detections=5):
+        return event_trajectory(lc, self.grid, window, min_detections=min_detections)
 
 
-def event_dual_schema(lightcurve, evolution_days=15.0, grid=TRAJECTORY_GRID, window=5.0):
+def event_dual_schema(lightcurve, evolution_days=15.0, grid=TRAJECTORY_GRID, window=5.0, min_detections=5):
     """Both the static two-point schema (:func:`cmsne.multicolour.event_multicolour`)\
     and the full N-point trajectory schema (:func:`event_trajectory`) for the
     same light curve.
@@ -225,10 +228,11 @@ def event_dual_schema(lightcurve, evolution_days=15.0, grid=TRAJECTORY_GRID, win
     (``trigger = days[detected].min()``), so merging the two dicts is safe --
     no other key collides.
 
-    :return: merged dict, or ``None`` if either half found nothing detected.
+    :return: merged dict, or ``None`` if either half found fewer than
+        ``min_detections`` visits.
     """
-    static_feat = event_multicolour(lightcurve, evolution_days, window)
-    traj_feat = event_trajectory(lightcurve, grid, window)
+    static_feat = event_multicolour(lightcurve, evolution_days, window, min_detections=min_detections)
+    traj_feat = event_trajectory(lightcurve, grid, window, min_detections=min_detections)
     if static_feat is None or traj_feat is None:
         return None
     return {**static_feat, **traj_feat}
@@ -245,16 +249,16 @@ class DualSchemaGenerator(MultiColourGenerator):
     only the per-event feature extraction differs.
     """
 
-    def __init__(self, source='salt3', grid=TRAJECTORY_GRID):
-        super().__init__(source)
+    def __init__(self, source='salt3', grid=TRAJECTORY_GRID, min_detections=5):
+        super().__init__(source, min_detections=min_detections)
         self.grid = grid
 
-    def _event_features(self, lc, evolution_days, window):
-        return event_dual_schema(lc, evolution_days, self.grid, window)
+    def _event_features(self, lc, evolution_days, window, min_detections=5):
+        return event_dual_schema(lc, evolution_days, self.grid, window, min_detections=min_detections)
 
 
 class TrajectoryClassifier(ColourClassifier):
-    """:class:`cmsne.classifier.ColourClassifier`, but trained on the full
+    """Like :class:`cmsne.classifier.ColourClassifier`, but trained on the full
     N-point trajectory schema (:data:`TRAJECTORY_COLOUR_KEYS` +
     :data:`TRAJECTORY_MAGNITUDE_KEYS`) instead of a single colour + one
     magnitude feature.

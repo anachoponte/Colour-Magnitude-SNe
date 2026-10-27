@@ -614,7 +614,7 @@ class _LCm:
         s.obs_mag_error = np.full(len(m), 0.1) if e is None else np.array(e, float)
 # g@2, r@3 detected; r@4 fainter; i@20 below depth (inf). Trigger = first detection (day 2).
 # Errors: g@2=0.05, r@3=0.08, i@20=inf (undetected anyway), r@4=0.12.
-_lc = _LCm([2, 3, 20, 4], ['g', 'r', 'i', 'r'], [22.0, 21.5, np.inf, 21.7], [0.05, 0.08, np.inf, 0.12])
+_lc = _LCm([2, 3, 20, 4, 50, 60], ['g', 'r', 'i', 'r', 'z', 'y'], [22.0, 21.5, np.inf, 21.7, 23.0, 23.0], [0.05, 0.08, np.inf, 0.12, 0.10, 0.10])
 _bp = mcol.band_photometry(_lc, 2.0, window=5.0)
 check('band_photometry picks nearest detection', np.isclose(_bp['lsstg'], 22.0) and np.isclose(_bp['lsstr'], 21.5),
       (_bp['lsstg'], _bp['lsstr']))
@@ -643,6 +643,10 @@ check('event_multicolour: peakmag_firstdet_err is the error of the first-detecti
 check('event_multicolour: no peakmag_fit_err field is added (explicitly out of scope)',
       'peakmag_fit_err' not in _f)
 check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+check('min_detections=5 rejects < 5 detections (Ponte Perez et al. 2025)',
+      mcol.event_multicolour(_LCm([1, 2, 3, 4], ['g', 'r', 'i', 'z'], [22.0, 22.0, 22.0, 22.0])) is None)
+check('min_detections=5 accepts >= 5 detections',
+      mcol.event_multicolour(_LCm([1, 2, 3, 4, 5], ['g', 'r', 'i', 'z', 'y'], [22.0, 22.0, 22.0, 22.0, 22.0])) is not None)
 check('rate_weight dispatches by class',
       mcol.rate_weight('uIa', 0.3, 1.0) > 0 and mcol.rate_weight('sig', 0.3, 10.0) > 0)
 _mg = mcol.MultiColourGenerator()
@@ -657,8 +661,8 @@ print('\n=== trajectory: N-point colour-magnitude generation ===')
 from cmsne import trajectory as traj
 # g@2,r@3 detected at trigger; g brighter again @20, r follows @23.
 # Errors: g@2=0.05, r@3=0.08, g@20=0.03, r@23=0.06.
-_lct = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0],
-            [0.05, 0.08, 0.03, 0.06])
+_lct = _LCm([2, 3, 20, 23, 50], ['g', 'r', 'g', 'r', 'z'], [22.0, 21.5, 20.0, 21.0, 23.0],
+            [0.05, 0.08, 0.03, 0.06, 0.10])
 _ft = traj.event_trajectory(_lct, grid=(0.0, 20.0), window=5.0)
 check('trigger epoch is first detection', _ft['trigger_day'] == 2.0, _ft['trigger_day'])
 check('colour at day 0 matches multicolour.event_multicolour',
@@ -670,6 +674,8 @@ check('cumulative peakmag at day 20 improves (brighter point included)',
       np.isclose(_ft['peakmag_d20'], 20.0), _ft['peakmag_d20'])
 check('no detections -> None',
       traj.event_trajectory(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+check('event_trajectory honours min_detections=5',
+      traj.event_trajectory(_LCm([1, 2, 3, 4], ['g', 'r', 'i', 'z'], [22.0, 22.0, 22.0, 22.0])) is None)
 
 check('event_trajectory: gr_d0_err is the quadrature sum of the trigger-snapshot bands\' own errors',
       np.isclose(_ft['gr_d0_err'], np.sqrt(0.05 ** 2 + 0.08 ** 2)), _ft['gr_d0_err'])
@@ -944,7 +950,7 @@ check('naive-vs-trajectory divergence is non-negative and finite',
       result['naive_vs_trajectory_mean_abs_diff'] >= 0.0, result['naive_vs_trajectory_mean_abs_diff'])
 
 print('\n=== trajectory: dual-schema generation (static + trajectory merged) ===')
-_lcd = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0])
+_lcd = _LCm([2, 3, 20, 23, 50], ['g', 'r', 'g', 'r', 'z'], [22.0, 21.5, 20.0, 21.0, 23.0])
 _fd = traj.event_dual_schema(_lcd, evolution_days=15.0, grid=(0.0, 20.0), window=5.0)
 check('dual schema has the static multicolour keys',
       'peakmag' in _fd and 'gr' in _fd and 'n_bands' in _fd)
@@ -960,6 +966,8 @@ check('static gr (epoch=trigger) matches trajectory gr_d0 (same epoch)',
       np.isclose(_fd['gr'], _fd['gr_d0']))
 check('no detections -> None',
       traj.event_dual_schema(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+check('event_dual_schema honours min_detections=5',
+      traj.event_dual_schema(_LCm([1, 2, 3, 4], ['g', 'r', 'i', 'z'], [22.0, 22.0, 22.0, 22.0])) is None)
 
 _dg = traj.DualSchemaGenerator()
 check('DualSchemaGenerator inherits MultiColourGenerator API',

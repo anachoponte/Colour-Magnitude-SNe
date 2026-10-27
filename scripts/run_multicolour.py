@@ -41,11 +41,11 @@ def _git_commit():
         return 'unknown'
 
 
-def run_class(cls, n, seed, pilot_frac=0.85):
+def run_class(cls, n, seed, min_detections=5, pilot_frac=0.85):
     np.random.seed(seed)
     # Sample z where the source covers lsstr (the normalisation band).
     z_range = redshift_limits(cls['source'], 'lsstr', 'lsstr')
-    gen = MultiColourGenerator(cls['source'])
+    gen = MultiColourGenerator(cls['source'], min_detections=min_detections)
     pop, boost_info = generate_with_boosting(
         gen, n, cls['kind'], z_range, cls['am'], cls['sd'],
         rate_weight_fn=lambda z, mu: rate_weight(
@@ -63,6 +63,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--n', type=int, default=100000, help='attempts per class')
     ap.add_argument('--class-index', type=int, default=None, help='run one class (array mode)')
+    ap.add_argument('--min-detections', type=int, default=5,
+                    help='minimum detected visits (SNR > 5) required for event detection (default: 5, Ponte Perez et al. 2025)')
     ap.add_argument('--out', default=None)
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--no-boost', action='store_true', help='disable sparse-corner boosting (pilot_frac=1.0)')
@@ -77,9 +79,10 @@ def main():
         json.dump({'started_utc': stamp, 'git_commit': _git_commit(),
                    'host': platform.node(), 'python': platform.python_version(),
                    'opsim_db': os.environ.get('CMSNE_OPSIM_DB', '(config default)'),
-                   'n_per_class': args.n, 'classes': [c['name'] for c in CLASSES]},
+                   'n_per_class': args.n, 'min_detections': args.min_detections,
+                   'classes': [c['name'] for c in CLASSES]},
                   open(os.path.join(out, 'manifest.json'), 'w'), indent=2)
-    print(f'output dir : {out}\ncommit     : {_git_commit()}\n', flush=True)
+    print(f'output dir : {out}\ncommit     : {_git_commit()}\nmin det    : {args.min_detections}\n', flush=True)
 
     run_start = time.time()
     for i in which:
@@ -88,6 +91,7 @@ def main():
         print(f'[{i}] {cls["name"]} ...', flush=True)
         try:
             pop, zr, boost_info = run_class(cls, args.n, args.seed + i,
+                                            min_detections=args.min_detections,
                                             pilot_frac=1.0 if args.no_boost else 0.85)
         except Exception as e:
             print(f'  FAILED {cls["name"]}: {e!r}', flush=True)
@@ -99,12 +103,13 @@ def main():
         nb = np.array([e['n_bands'] for e in pop]) if pop else np.array([0])
         tot_rate = float(np.sum([e['weight'] for e in pop])) if pop else 0.0
         row = {'class': cls['name'], 'kept': len(pop), 'n_attempted': args.n,
+               'min_detections': args.min_detections,
                'median_n_bands': float(np.median(nb)),
                'annual_detection_rate': tot_rate,
                'minutes': round((time.time() - t0) / 60, 2)}
         json.dump(row, open(os.path.join(out, f'{cls["name"]}.summary.json'), 'w'), indent=2)
         print(f'  kept {row["kept"]}/{args.n}, median bands {row["median_n_bands"]:.0f}'
-              f'  [{row["minutes"]:.1f} min]', flush=True)
+              f'  annual_rate={tot_rate:.4e}/yr  [{row["minutes"]:.1f} min]', flush=True)
 
     print(f'\ntotal {(time.time() - run_start) / 3600:.2f} h  ->  {out}', flush=True)
 
