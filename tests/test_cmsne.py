@@ -609,14 +609,20 @@ if pop_ml:
 print('\n=== multicolour: all-band photometry extraction ===')
 from cmsne import multicolour as mcol
 class _LCm:
-    def __init__(s, d, f, m):
+    def __init__(s, d, f, m, e=None):
         s.obs_days = np.array(d, float); s.obs_filters = np.array(f); s.obs_mag = np.array(m, float)
+        s.obs_mag_error = np.full(len(m), 0.1) if e is None else np.array(e, float)
 # g@2, r@3 detected; r@4 fainter; i@20 below depth (inf). Trigger = first detection (day 2).
-_lc = _LCm([2, 3, 20, 4], ['g', 'r', 'i', 'r'], [22.0, 21.5, np.inf, 21.7])
+# Errors: g@2=0.05, r@3=0.08, i@20=inf (undetected anyway), r@4=0.12.
+_lc = _LCm([2, 3, 20, 4], ['g', 'r', 'i', 'r'], [22.0, 21.5, np.inf, 21.7], [0.05, 0.08, np.inf, 0.12])
 _bp = mcol.band_photometry(_lc, 2.0, window=5.0)
 check('band_photometry picks nearest detection', np.isclose(_bp['lsstg'], 22.0) and np.isclose(_bp['lsstr'], 21.5),
       (_bp['lsstg'], _bp['lsstr']))
 check('band_photometry NaN for undetected band', np.isnan(_bp['lssti']) and np.isnan(_bp['lsstu']))
+_bpe = mcol.band_photometry_errors(_lc, 2.0, window=5.0)
+check('band_photometry_errors matches the SAME nearest-detection index as band_photometry',
+      np.isclose(_bpe['lsstg'], 0.05) and np.isclose(_bpe['lsstr'], 0.08), (_bpe['lsstg'], _bpe['lsstr']))
+check('band_photometry_errors NaN for undetected band', np.isnan(_bpe['lssti']) and np.isnan(_bpe['lsstu']))
 _f = mcol.event_multicolour(_lc)
 check('trigger epoch is first detection', _f['trigger_day'] == 2.0, _f['trigger_day'])
 check('colour = band mag difference', np.isclose(_f['gr'], 0.5), _f['gr'])
@@ -626,6 +632,16 @@ check('peakmag_firstdet is the earliest detection', np.isclose(_f['peakmag_first
 check('peakmag_fit falls back to brightest when <3 band points',
       np.isclose(_f['peakmag_fit'], 21.5), _f['peakmag_fit'])
 check('n_bands counts bands at trigger', _f['n_bands'] == 2, _f['n_bands'])
+check('event_multicolour: gr_err is the quadrature sum of the two bands\' own errors',
+      np.isclose(_f['gr_err'], np.sqrt(0.05 ** 2 + 0.08 ** 2)), _f['gr_err'])
+check('event_multicolour: colour error is NaN exactly where the colour itself is NaN',
+      np.isnan(_f['ri']) and np.isnan(_f['ri_err']))
+check('event_multicolour: peakmag_err is the error of whichever observation achieved peakmag',
+      np.isclose(_f['peakmag_err'], 0.08), _f['peakmag_err'])
+check('event_multicolour: peakmag_firstdet_err is the error of the first-detection observation',
+      np.isclose(_f['peakmag_firstdet_err'], 0.05), _f['peakmag_firstdet_err'])
+check('event_multicolour: no peakmag_fit_err field is added (explicitly out of scope)',
+      'peakmag_fit_err' not in _f)
 check('no detections -> None', mcol.event_multicolour(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
 check('rate_weight dispatches by class',
       mcol.rate_weight('uIa', 0.3, 1.0) > 0 and mcol.rate_weight('sig', 0.3, 10.0) > 0)
@@ -640,7 +656,9 @@ check('MultiColourGenerator._event_features defaults to event_multicolour',
 print('\n=== trajectory: N-point colour-magnitude generation ===')
 from cmsne import trajectory as traj
 # g@2,r@3 detected at trigger; g brighter again @20, r follows @23.
-_lct = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0])
+# Errors: g@2=0.05, r@3=0.08, g@20=0.03, r@23=0.06.
+_lct = _LCm([2, 3, 20, 23], ['g', 'r', 'g', 'r'], [22.0, 21.5, 20.0, 21.0],
+            [0.05, 0.08, 0.03, 0.06])
 _ft = traj.event_trajectory(_lct, grid=(0.0, 20.0), window=5.0)
 check('trigger epoch is first detection', _ft['trigger_day'] == 2.0, _ft['trigger_day'])
 check('colour at day 0 matches multicolour.event_multicolour',
@@ -652,6 +670,17 @@ check('cumulative peakmag at day 20 improves (brighter point included)',
       np.isclose(_ft['peakmag_d20'], 20.0), _ft['peakmag_d20'])
 check('no detections -> None',
       traj.event_trajectory(_LCm([1, 2], ['g', 'r'], [np.inf, np.inf])) is None)
+
+check('event_trajectory: gr_d0_err is the quadrature sum of the trigger-snapshot bands\' own errors',
+      np.isclose(_ft['gr_d0_err'], np.sqrt(0.05 ** 2 + 0.08 ** 2)), _ft['gr_d0_err'])
+check('event_trajectory: gr_d20_err uses the day-20-snapshot bands\' own errors',
+      np.isclose(_ft['gr_d20_err'], np.sqrt(0.03 ** 2 + 0.06 ** 2)), _ft['gr_d20_err'])
+check('event_trajectory: peakmag_d0_err is the error of whichever observation achieved '
+      'the cumulative-best magnitude at day 0 (r@3, the brighter of g@2/r@3)',
+      np.isclose(_ft['peakmag_d0_err'], 0.08), _ft['peakmag_d0_err'])
+check('event_trajectory: peakmag_d20_err tracks the NEW observation once it supersedes '
+      'the running best (g@20=20.0 is brighter than the day-0 best of 21.5)',
+      np.isclose(_ft['peakmag_d20_err'], 0.03), _ft['peakmag_d20_err'])
 check('TRAJECTORY_COLOUR_KEYS has 5 colours x 5 grid steps',
       len(traj.TRAJECTORY_COLOUR_KEYS) == 25, len(traj.TRAJECTORY_COLOUR_KEYS))
 check('TRAJECTORY_MAGNITUDE_KEYS has one peakmag per grid step',
@@ -707,6 +736,19 @@ check('reveal_up_to NaNs out steps beyond k',
       np.isnan(revealed['gr_d60']) and np.isnan(revealed['peakmag_d60']))
 check('reveal_up_to does not mutate the original event',
       np.isfinite(sig_t[0]['gr_d14']))
+
+_sig_t_err = dict(sig_t[0])
+for _k in TRAJECTORY_COLOUR_KEYS:
+    _sig_t_err[f'{_k}_err'] = 0.2
+for _k in TRAJECTORY_MAGNITUDE_KEYS:
+    _sig_t_err[f'{_k}_err'] = 0.1
+_revealed_err = reveal_up_to(_sig_t_err, 1, TRAJECTORY_GRID)
+check('reveal_up_to also NaNs out *_err keys for steps beyond k (not just the values) '
+      '-- a hidden future step must not leak its own measurement uncertainty either',
+      np.isnan(_revealed_err['gr_d14_err']) and np.isnan(_revealed_err['peakmag_d14_err']) and
+      np.isnan(_revealed_err['gr_d60_err']) and np.isnan(_revealed_err['peakmag_d60_err']))
+check('reveal_up_to keeps *_err keys for steps 0-1 finite',
+      np.isfinite(_revealed_err['gr_d0_err']) and np.isfinite(_revealed_err['gr_d3_err']))
 
 fpr_r, tpr_r, thr_r = tclf.roc_curve(sig_t, bg_t)
 check('roc_curve returns matching-length fpr/tpr/thresholds arrays',
@@ -1268,6 +1310,105 @@ check('_kernel_weighted_values returns zeros for empty dims',
 check('_kernel_weighted_values returns zeros for zero training rows',
       np.all(_kernel_weighted_values(np.array([0.0]), np.zeros((0, 1)), np.zeros(0), _kw_h, _kw_dims) == 0.0))
 
+print('\n=== uncertainty-aware noise injection: primitives ===')
+from cmsne.classifier import (colour_feature_sigma_matrix, _replicate_with_uncertainty,
+                              _grouped_effective_sample_size, DEFAULT_N_UNCERTAINTY_REPLICATES)
+from cmsne.importance_sampling import effective_sample_size as _ess_ref2
+
+check('DEFAULT_N_UNCERTAINTY_REPLICATES is a sane positive default', DEFAULT_N_UNCERTAINTY_REPLICATES >= 2,
+      DEFAULT_N_UNCERTAINTY_REPLICATES)
+
+_sig_events = [{'gr': 1.0, 'peakmag': 20.0, 'gr_err': 0.1},
+               {'gr': 2.0, 'peakmag': 21.0}]  # second event has NO gr_err/peakmag_err at all
+_sig_matrix = colour_feature_sigma_matrix(_sig_events, keys=['gr'], extra=('peakmag',))
+check('colour_feature_sigma_matrix reads the *_err field when present',
+      np.isclose(_sig_matrix[0, 0], 0.1), _sig_matrix[0, 0])
+check('colour_feature_sigma_matrix is NaN when no *_err field exists',
+      np.isnan(_sig_matrix[0, 1]) and np.isnan(_sig_matrix[1, 0]) and np.isnan(_sig_matrix[1, 1]))
+
+# No-op: sigma entirely non-finite over dims -> unchanged, no RNG draws.
+_rwu_X = np.array([[1.0, 2.0], [3.0, 4.0]])
+_rwu_w = np.array([0.5, 0.5])
+_rwu_sigma_none = np.full_like(_rwu_X, np.nan)
+_rwu_Xr, _rwu_wr, _rwu_id = _replicate_with_uncertainty(_rwu_X, _rwu_sigma_none, _rwu_w, np.array([0, 1]), 8)
+check('_replicate_with_uncertainty is a no-op when sigma is entirely non-finite',
+      np.array_equal(_rwu_Xr, _rwu_X) and np.array_equal(_rwu_wr, _rwu_w) and
+      np.array_equal(_rwu_id, np.arange(2)))
+
+# Weight preservation: each original event's replica weights sum back exactly.
+_rwu_sigma = np.array([[0.2, np.nan], [np.nan, 0.5]])
+_rwu_Xr2, _rwu_wr2, _rwu_id2 = _replicate_with_uncertainty(_rwu_X, _rwu_sigma, _rwu_w, np.array([0, 1]), 8)
+check('_replicate_with_uncertainty expands each row into n_replicates copies',
+      len(_rwu_Xr2) == 2 * 8, len(_rwu_Xr2))
+check('_replicate_with_uncertainty preserves each original event\'s total weight exactly',
+      np.allclose(np.bincount(_rwu_id2, weights=_rwu_wr2, minlength=2), _rwu_w))
+check('_replicate_with_uncertainty leaves a dimension unperturbed when that row\'s sigma is non-finite',
+      np.all(_rwu_Xr2[_rwu_id2 == 0, 1] == 2.0) and np.all(_rwu_Xr2[_rwu_id2 == 1, 0] == 3.0))
+
+# Perturbation: with a large, finite sigma, replicas measurably scatter.
+_rwu_sigma_big = np.array([[5.0, np.nan]])
+_rwu_Xr3, _, _ = _replicate_with_uncertainty(np.array([[10.0, 0.0]]), _rwu_sigma_big, np.array([1.0]),
+                                              np.array([0]), 2000, seed=1)
+check('_replicate_with_uncertainty replicas scatter with roughly the given sigma',
+      abs(np.std(_rwu_Xr3[:, 0]) - 5.0) < 0.5, np.std(_rwu_Xr3[:, 0]))
+
+# Second-pass review finding: two columns of the SAME row that are the literal same
+# underlying observation (e.g. two trajectory grid steps whose nearest-detection
+# window picked the identical measurement) end up with IDENTICAL (value, sigma) by
+# construction -- they must move together under perturbation (one shared noise
+# draw), not drift apart as if independently measured.
+_dup_X = np.array([[3.0, 3.0, 7.0]])       # cols 0,1 are the SAME duplicated observation; col 2 is unrelated
+_dup_sigma = np.array([[0.5, 0.5, 0.5]])   # identical sigma too (same underlying error)
+_dup_Xr, _, _ = _replicate_with_uncertainty(_dup_X, _dup_sigma, np.array([1.0]), np.array([0, 1, 2]), 50, seed=7)
+check('_replicate_with_uncertainty draws the SAME noise offset for two columns sharing '
+      'the identical (value, sigma) pair (the duplicate-observation case)',
+      np.array_equal(_dup_Xr[:, 0] - _dup_X[0, 0], _dup_Xr[:, 1] - _dup_X[0, 1]))
+check('_replicate_with_uncertainty still draws INDEPENDENT noise for an unrelated column '
+      '(not grouped just because it shares the same sigma value)',
+      not np.allclose(_dup_Xr[:, 0] - _dup_X[0, 0], _dup_Xr[:, 2] - _dup_X[0, 2]))
+check('_replicate_with_uncertainty grouping does not change the no-duplicate case: two '
+      'genuinely distinct values (even with equal sigma) scatter independently, matching '
+      'pre-grouping behaviour for the static schema (values essentially never collide)',
+      np.std(_dup_Xr[:, 2]) > 0.1, np.std(_dup_Xr[:, 2]))
+
+# Second-pass review finding: a cumulative-minimum column sequence (e.g. trajectory
+# peakmag at increasing Δt) must stay non-increasing per replica even after
+# independent perturbation -- a classifier should never see a physically impossible
+# "cumulative best got fainter" feature vector.
+_mono_X = np.array([[22.0, 21.0, 20.0]])    # already non-increasing (brighter over time)
+_mono_sigma = np.array([[0.5, 0.5, 0.5]])
+_mono_Xr, _, _ = _replicate_with_uncertainty(
+    _mono_X, _mono_sigma, np.array([1.0]), np.array([0, 1, 2]), 500, seed=9,
+    monotonic_groups=[[0, 1, 2]])
+check('_replicate_with_uncertainty with monotonic_groups keeps every replica non-increasing '
+      'across the grouped columns, even though each was perturbed independently',
+      np.all(np.diff(_mono_Xr, axis=1) <= 0))
+_mono_Xr_nogroup, _, _ = _replicate_with_uncertainty(
+    _mono_X, _mono_sigma, np.array([1.0]), np.array([0, 1, 2]), 500, seed=9)
+check('without monotonic_groups (the default, every existing caller), replicas are free to '
+      'violate the ordering -- proving the constraint above comes from monotonic_groups, '
+      'not some other implicit property of this data/seed',
+      not np.all(np.diff(_mono_Xr_nogroup, axis=1) <= 0))
+
+# The ESS-inflation bug, and the fix: 5 replicas of ONE real point must not look
+# like 5 independent points.
+_grp_event_id = np.array([0, 0, 0, 0, 0])
+_grp_g = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
+check('naive (ungrouped) ESS is fooled into thinking 5 replicas are 5 independent samples',
+      np.isclose(_ess_ref2(_grp_g), 5.0), _ess_ref2(_grp_g))
+check('_grouped_effective_sample_size correctly reports ESS~1 for 5 replicas of ONE real point',
+      np.isclose(_grouped_effective_sample_size(_grp_g, _grp_event_id, 1), 1.0),
+      _grouped_effective_sample_size(_grp_g, _grp_event_id, 1))
+
+_grp_event_id2 = np.array([0, 0, 0, 1, 1, 1])
+_grp_g2 = np.array([0.1, 0.1, 0.1, 0.05, 0.05, 0.05])
+_grp_expected = _ess_ref2(np.array([0.3, 0.15]))
+check('_grouped_effective_sample_size matches a direct group-sum-then-ESS calculation',
+      np.isclose(_grouped_effective_sample_size(_grp_g2, _grp_event_id2, 2), _grp_expected),
+      (_grouped_effective_sample_size(_grp_g2, _grp_event_id2, 2), _grp_expected))
+check('_grouped_effective_sample_size reduces to plain ESS for a trivial (non-replicated) event_id',
+      np.isclose(_grouped_effective_sample_size(_grp_g2, np.arange(6), 6), _ess_ref2(_grp_g2)))
+
 print('\n=== local density-ratio blend: density ratio and blend weight ===')
 from cmsne.classifier import _local_density_ratio, _blend_weight
 
@@ -1408,6 +1549,41 @@ check('TrajectoryClassifier inherits the sparse-corner blend with no extra code'
       (_tc_corner_blended, _tc_corner_tree_only))
 
 
+print('\n=== uncertainty-aware noise injection: tree-side wiring ===')
+
+check('ColourClassifier stores n_uncertainty_replicates',
+      ColourClassifier(n_uncertainty_replicates=3).n_uncertainty_replicates == 3)
+
+# A population with real, large gr_err values trains and predicts without error.
+_rng_unc = np.random.default_rng(11)
+_n_unc = 300
+_unc_sig = [{'gr': float(_rng_unc.normal(1.0, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+             'gr_err': float(abs(_rng_unc.normal(0.3, 0.1))), 'peakmag_err': 0.1}
+            for _ in range(_n_unc)]
+_unc_bg = [{'gr': float(_rng_unc.normal(1.3, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+            'gr_err': float(abs(_rng_unc.normal(0.3, 0.1))), 'peakmag_err': 0.1}
+           for _ in range(_n_unc)]
+_unc_w = np.full(_n_unc, 1e-5)
+_clf_unc = ColourClassifier(keys=['gr'], include_peakmag=True, n_uncertainty_replicates=4)
+_clf_unc.fit(_unc_sig, _unc_bg, _unc_w, _unc_w)
+_unc_probe = _clf_unc.score([{'gr': 1.1, 'peakmag': 22.0, 'gr_err': 0.2}])
+check('a classifier trained with real uncertainty data produces a finite, calibrated-range score',
+      np.isfinite(_unc_probe[0]) and 0.0 <= _unc_probe[0] <= 1.0, _unc_probe[0])
+
+# With NO uncertainty data anywhere (training OR query -- reusing the
+# error-free _dense_sig/_dense_bg/_dense_sw/_dense_bw fixtures from the
+# "wired into ColourClassifier" section above), score() is numerically
+# identical to predict_proba directly: replication is a true no-op start to
+# finish, not just at the query.
+_clf_noerr = ColourClassifier(keys=['gr'], include_peakmag=True)
+_clf_noerr.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
+_X_direct, _ = colour_feature_matrix([{'gr': 1.1, 'peakmag': 22.0}], ['gr'], ('peakmag',))
+check('score() with no *_err data anywhere matches predict_proba directly '
+      '(replication is a true no-op, training and query alike)',
+      np.isclose(_clf_noerr.score([{'gr': 1.1, 'peakmag': 22.0}])[0],
+                 _clf_noerr.clf.predict_proba(_X_direct)[0, 1]))
+
+
 print('\n=== local density-ratio blend: backward compatibility and kde_max_events ===')
 
 # Production-shaped: wide dynamic range of rate weights (spanning several
@@ -1444,19 +1620,19 @@ _clf_cap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=5
 _clf_cap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
 check('_kde_Xs now stores the full positive-weight population, unaffected by kde_max_events',
       _clf_cap._kde_Xs.shape[0] == np.sum(_cap_weights > 0), _clf_cap._kde_Xs.shape[0])
-_Xs_capped, _ws_capped, _, _, _, _ = _clf_cap._kde_subset_for_pattern((True,), np.array([0]))
+_subset_capped = _clf_cap._kde_subset_for_pattern((True,), np.array([0]))
 check('kde_max_events caps the PER-PATTERN subsample (via _kde_subset_for_pattern) to at most the cap',
-      _Xs_capped.shape[0] <= 50, _Xs_capped.shape[0])
+      _subset_capped.Xs.shape[0] <= 50, _subset_capped.Xs.shape[0])
 check('kde_max_events preserves total rate mass after per-pattern subsampling (within 1%)',
-      abs(_ws_capped.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
-      (_ws_capped.sum(), _cap_weights.sum()))
+      abs(_subset_capped.ws.sum() - _cap_weights.sum()) / _cap_weights.sum() < 0.01,
+      (_subset_capped.ws.sum(), _cap_weights.sum()))
 
 # Below the cap: no subsampling, nothing changes at the pattern level either.
 _clf_nocap = ColourClassifier(keys=['gr'], include_peakmag=False, kde_max_events=10000)
 _clf_nocap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
-_Xs_nocap, _, _, _, _, _ = _clf_nocap._kde_subset_for_pattern((True,), np.array([0]))
+_subset_nocap = _clf_nocap._kde_subset_for_pattern((True,), np.array([0]))
 check('kde_max_events above the actual event count leaves the per-pattern subset untouched',
-      _Xs_nocap.shape[0] == np.sum(_cap_weights > 0), _Xs_nocap.shape[0])
+      _subset_nocap.Xs.shape[0] == np.sum(_cap_weights > 0), _subset_nocap.Xs.shape[0])
 
 print('\n=== KDE pattern-aware subsampling: budget is not wasted on rows a pattern cannot use ===')
 # Mimics the real bug at small scale: 950/1000 rows are missing column 1
@@ -1477,16 +1653,17 @@ _Xs_waste = np.vstack([
 _ws_waste = np.full(_n_both + _n_col0_only, 1e-6)
 _clf_waste = ColourClassifier(keys=['gr'], include_peakmag=True, kde_max_events=10)
 _clf_waste.columns = ['gr', 'peakmag']
-_clf_waste._store_kde_training_data(_Xs_waste, _ws_waste, _Xs_waste, _ws_waste)
+_sigma_waste = np.full_like(_Xs_waste, np.nan)  # no uncertainty data -- isolates the subsampling behaviour
+_clf_waste._store_kde_training_data(_Xs_waste, _ws_waste, _Xs_waste, _ws_waste, _sigma_waste, _sigma_waste)
 check('_store_kde_training_data retains the FULL population (no global subsampling)',
       _clf_waste._kde_Xs.shape[0] == _n_both + _n_col0_only, _clf_waste._kde_Xs.shape[0])
-_Xs_both, _, _, _, _, _ = _clf_waste._kde_subset_for_pattern((True, True), np.array([0, 1]))
+_subset_both = _clf_waste._kde_subset_for_pattern((True, True), np.array([0, 1]))
 check('the all-finite pattern reaches its FULL kde_max_events cap, drawn only from rows it can use '
       '(not starved by 950 unrelated-pattern rows competing for a shared budget)',
-      _Xs_both.shape[0] == 10, _Xs_both.shape[0])
-_Xs_col0, _, _, _, _, _ = _clf_waste._kde_subset_for_pattern((True, False), np.array([0]))
+      _subset_both.Xs.shape[0] == 10, _subset_both.Xs.shape[0])
+_subset_col0 = _clf_waste._kde_subset_for_pattern((True, False), np.array([0]))
 check('a second, disjoint pattern independently reaches its own full cap too (patterns do not starve each other)',
-      _Xs_col0.shape[0] == 10, _Xs_col0.shape[0])
+      _subset_col0.Xs.shape[0] == 10, _subset_col0.Xs.shape[0])
 
 
 print('\n=== adaptive KDE bandwidth: _widened_kernel_values ===')
@@ -1583,15 +1760,474 @@ _clf_cache.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
 _pattern_dense = (True,)
 _dims_dense = np.array([0])
 _subset = _clf_cache._kde_subset_for_pattern(_pattern_dense, _dims_dense)
-check('_kde_subset_for_pattern now returns a 6-tuple including the two cached ESS ceilings',
-      len(_subset) == 6, len(_subset))
-_expected_ceil_sig = _ess_ref(_subset[1])
-_expected_ceil_bg = _ess_ref(_subset[3])
-check('_kde_subset_for_pattern caches effective_sample_size(ws_p)/effective_sample_size(wb_p) correctly',
-      np.isclose(_subset[4], _expected_ceil_sig) and np.isclose(_subset[5], _expected_ceil_bg),
-      (_subset[4], _expected_ceil_sig, _subset[5], _expected_ceil_bg))
-check('_kde_subset_for_pattern caches the same tuple object on a repeated call (no recomputation)',
+check('_kde_subset_for_pattern now returns a _KDEPatternSubset with 10 fields '
+      '(Xs, ws, Xb, wb, ess_ceiling_sig, ess_ceiling_bg, event_id_s, event_id_b, n_orig_s, n_orig_b)',
+      len(_subset) == 10, len(_subset))
+_expected_ceil_sig = _ess_ref(_subset.ws)
+_expected_ceil_bg = _ess_ref(_subset.wb)
+check('_kde_subset_for_pattern caches effective_sample_size(ws)/effective_sample_size(wb) correctly '
+      '(no uncertainty data here, so ws/wb are unreplicated and this matches directly)',
+      np.isclose(_subset.ess_ceiling_sig, _expected_ceil_sig) and
+      np.isclose(_subset.ess_ceiling_bg, _expected_ceil_bg),
+      (_subset.ess_ceiling_sig, _expected_ceil_sig, _subset.ess_ceiling_bg, _expected_ceil_bg))
+check('_kde_subset_for_pattern caches the same object on a repeated call (no recomputation)',
       _clf_cache._kde_subset_for_pattern(_pattern_dense, _dims_dense) is _subset)
+
+print('\n=== uncertainty-aware noise injection: KDE-side wiring ===')
+# Grouped-ESS integration: _widened_kernel_values and _local_density_ratio must
+# not be fooled by replicas of one real point, end to end (not just via the
+# standalone _grouped_effective_sample_size helper tested in Task 2).
+_gi_h = np.array([1.0])
+_gi_dims = np.array([0])
+_gi_X_one_point_x5 = np.array([[3.0], [3.0], [3.0], [3.0], [3.0]])  # 5 "replicas" of ONE real point
+_gi_w_one_point_x5 = np.full(5, 1e-5 / 5)                           # each at weight/5
+_gi_event_id = np.array([0, 0, 0, 0, 0])
+_gi_g_ungrouped = _kernel_weighted_values(np.array([0.0]), _gi_X_one_point_x5, _gi_w_one_point_x5, _gi_h, _gi_dims)
+check('WITHOUT the event_id/n_original fix, 5 replicas of one point look like ESS~5',
+      _ess_ref(_gi_g_ungrouped) > 4.0, _ess_ref(_gi_g_ungrouped))
+_, _gi_ess_grouped = _widened_kernel_values(
+    np.array([0.0]), _gi_X_one_point_x5, _gi_w_one_point_x5, _gi_h, _gi_dims, min_ess=10.0,
+    event_id=_gi_event_id, n_original=1)
+check('_widened_kernel_values with event_id/n_original correctly reports ESS~1 for the same 5 replicas',
+      _gi_ess_grouped < 1.5, _gi_ess_grouped)
+
+# Issue #37 smoking-gun reproduction, at the _local_density_ratio level (the
+# same style as PR #36's own bug-reproduction test, _bug_Xs/_bug_ws above):
+# one background point sitting RIGHT AT the query with a large, unmodelled
+# uncertainty (mirrors the real gr=6.16 event -- a near-detection-limit
+# colour) single-handedly dominates the density estimate WITHOUT noise
+# injection, exactly as observed on real data, and is correctly smeared back
+# down WITH it. Signal sits far enough away (3 bandwidths) that its 20 points
+# don't outweigh background's single exact-match point until that point's own
+# uncertainty is taken into account.
+_sg_h = np.array([1.0])
+_sg_dims = np.array([0])
+_sg_Xs = np.array([[3.0]] * 20)       # signal: 20 points, each 3 bandwidths from the query
+_sg_ws = np.full(20, 1e-5)
+_sg_Xb = np.array([[0.0]])            # background: ONE point exactly at the query
+_sg_wb = np.array([1e-5])
+_sg_sigma_b = np.array([[5.0]])       # ...with a large, unmodelled measurement uncertainty
+
+_p_sg_noinj, _, _ = _local_density_ratio(np.array([0.0]), _sg_Xs, _sg_ws, _sg_Xb, _sg_wb, _sg_h, _sg_dims)
+check('WITHOUT noise injection, the single exact-match high-uncertainty background point '
+      'dominates the query, as observed in the real issue #37 finding',
+      _p_sg_noinj is not None and _p_sg_noinj < 0.3, _p_sg_noinj)
+
+_sg_Xb_rep, _sg_wb_rep, _sg_event_id_b = _replicate_with_uncertainty(
+    _sg_Xb, _sg_sigma_b, _sg_wb, _sg_dims, n_replicates=500, seed=3)
+_p_sg_inj, _, _ = _local_density_ratio(
+    np.array([0.0]), _sg_Xs, _sg_ws, _sg_Xb_rep, _sg_wb_rep, _sg_h, _sg_dims,
+    event_id_b=_sg_event_id_b, n_orig_b=1)
+check('WITH noise injection, that point\'s own large uncertainty smears its contribution and '
+      'the probability moves back toward the confident signal population',
+      _p_sg_inj is not None and _p_sg_inj > _p_sg_noinj, (_p_sg_noinj, _p_sg_inj))
+
+print('\n=== uncertainty-aware noise injection: integration ===')
+from cmsne.trajectory import TrajectoryClassifier
+
+_rank_sig = [{'gr': float(_rng_unc.normal(1.0, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+              'gr_err': 0.2} for _ in range(50)]
+_rank_bg = [{'gr': float(_rng_unc.normal(1.5, 0.3)), 'peakmag': float(_rng_unc.normal(22.0, 1.0)),
+             'gr_err': 0.2} for _ in range(50)]
+_rank_w = np.full(50, 1e-5)
+_clf_rank = ColourClassifier(keys=['gr'], include_peakmag=True, n_uncertainty_replicates=4)
+_clf_rank.fit(_rank_sig, _rank_bg, _rank_w, _rank_w)
+_rank_query = [{'gr': float(_rng_unc.normal(1.2, 0.3)), 'peakmag': 22.0, 'gr_err': 0.2} for _ in range(10)]
+check('rank() orders by score() with no separate change needed',
+      np.array_equal(_clf_rank.rank(_rank_query), np.argsort(_clf_rank.score(_rank_query))[::-1]))
+
+
+# TrajectoryClassifier hardcodes include_peakmag=False internally and sets its
+# own self.extra -- follow the SAME construction the existing "inherits the
+# sparse-corner blend" test above already uses (_tc_event/TRAJECTORY_COLOUR_KEYS/
+# TRAJECTORY_MAGNITUDE_KEYS/_tc_key/_rng_sparse), only adding an *_err field;
+# passing keys=.../include_peakmag=... here would collide with its __init__.
+_tc_unc_sig = [_tc_event(float(_rng_sparse.normal(1.0, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
+              for _ in range(50)]
+_tc_unc_bg = [_tc_event(float(_rng_sparse.normal(1.3, 0.3)), float(_rng_sparse.normal(22.0, 1.0)))
+             for _ in range(50)]
+for _e in _tc_unc_sig + _tc_unc_bg:
+    _e[f'{_tc_key}_err'] = 0.2
+_tc_unc_w = np.full(50, 1e-5)
+_traj_clf_unc = TrajectoryClassifier(n_uncertainty_replicates=4)
+_traj_clf_unc.fit(_tc_unc_sig, _tc_unc_bg, _tc_unc_w, _tc_unc_w)
+_tc_unc_query = [_tc_event(1.1, 22.0)]
+_tc_unc_query[0][f'{_tc_key}_err'] = 0.2
+_traj_probe = _traj_clf_unc.probability(_tc_unc_query)
+check('TrajectoryClassifier inherits noise injection with no extra code',
+      np.all(np.isfinite(_traj_probe)) and np.all((_traj_probe >= 0) & (_traj_probe <= 1)), _traj_probe)
+
+print('\n=== second-pass review fix: trajectory monotonicity + duplicate-observation '
+      'correlation, on REAL event_trajectory output ===')
+# A light curve engineered so trigger+0d and trigger+3d's +-5d windows BOTH pick the
+# SAME single g@1/r@1 observation pair (window=5 heavily overlaps a 3-day grid gap,
+# unlike event_multicolour's disjoint trigger/trigger+evolution_days snapshots) --
+# the real-data mechanism the second-pass review flagged, not a contrived case.
+# A brighter detection at day 12 (trigger+14's window) and brighter still at day 35
+# (trigger+30's window) exercises genuine cumulative-best (peakmag) improvement.
+_lct_dup = _LCm([1, 1, 12, 35, 35], ['g', 'r', 'g', 'g', 'r'],
+                [22.0, 21.0, 20.0, 19.0, 19.5],
+                [0.05, 0.08, 0.03, 0.02, 0.025])
+_ft_dup = traj.event_trajectory(_lct_dup, grid=traj.TRAJECTORY_GRID, window=5.0)
+check('fixture check: gr_d0 and gr_d3 really do come from the identical underlying '
+      'observation pair (both value AND error match exactly), confirming this is the '
+      'real mechanism, not assumed',
+      _ft_dup['gr_d0'] == _ft_dup['gr_d3'] and _ft_dup['gr_d0_err'] == _ft_dup['gr_d3_err'],
+      (_ft_dup['gr_d0'], _ft_dup['gr_d3'], _ft_dup['gr_d0_err'], _ft_dup['gr_d3_err']))
+check('fixture check: peakmag genuinely improves (gets brighter) over the grid, so the '
+      'monotonicity check below is not vacuous',
+      _ft_dup['peakmag_d60'] < _ft_dup['peakmag_d14'] < _ft_dup['peakmag_d0'],
+      (_ft_dup['peakmag_d0'], _ft_dup['peakmag_d14'], _ft_dup['peakmag_d60']))
+
+_dup_X_full, _dup_cols = colour_feature_matrix([_ft_dup], TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS)
+_dup_sigma_full = colour_feature_sigma_matrix([_ft_dup], TRAJECTORY_COLOUR_KEYS, TRAJECTORY_MAGNITUDE_KEYS)
+_dup_mono_groups = [[_dup_cols.index(k) for k in TRAJECTORY_MAGNITUDE_KEYS]]
+_dup_Xrep, _, _ = _replicate_with_uncertainty(
+    _dup_X_full, _dup_sigma_full, np.array([1.0]), np.arange(_dup_X_full.shape[1]), 500, seed=13,
+    monotonic_groups=_dup_mono_groups)
+_gr_d0_idx, _gr_d3_idx = _dup_cols.index('gr_d0'), _dup_cols.index('gr_d3')
+check('on REAL event_trajectory output run through _replicate_with_uncertainty: the two '
+      'columns sharing the identical underlying observation produce IDENTICAL perturbed '
+      'values across every one of 500 replicas (not just similar -- exactly equal, since '
+      'they share one noise draw)',
+      np.array_equal(_dup_Xrep[:, _gr_d0_idx], _dup_Xrep[:, _gr_d3_idx]))
+_mag_cols_idx = [_dup_cols.index(k) for k in TRAJECTORY_MAGNITUDE_KEYS]
+check('on REAL event_trajectory output: every one of 500 replicas stays non-increasing '
+      'across the cumulative-peakmag grid-step sequence, even though peakmag_d14/peakmag_d30 '
+      'etc. were perturbed independently from DIFFERENT underlying observations',
+      np.all(np.diff(_dup_Xrep[:, _mag_cols_idx], axis=1) <= 0))
+
+# End-to-end smoke test: TrajectoryClassifier trained/queried on a population built from
+# REAL event_trajectory calls (not the toy single-column _tc_event fixture), confirming
+# the fixes above compose correctly through fit()/probability(), not just in isolation.
+def _mk_real_traj_event(rng, g_mean, r_mean):
+    # One g/r pair near each of the 5 grid steps (0, 3, 14, 30, 60d post-trigger,
+    # each within window=5.0) so every gr_d*/peakmag_d* column is finite for every
+    # event -- an all-NaN column crashes HistGradientBoostingClassifier's binning
+    # (same gotcha the existing _tc_event-based test already works around).
+    offsets = [0.0, 13.0, 31.0, 61.0]
+    days, filters, mags, errs = [], [], [], []
+    for k, off in enumerate(offsets):
+        jitter = float(rng.uniform(0, 1.5))
+        days += [off + jitter, off + jitter]
+        filters += ['g', 'r']
+        mags += [float(rng.normal(g_mean - 0.3 * k, 0.2)), float(rng.normal(r_mean - 0.3 * k, 0.2))]
+        errs += [float(abs(rng.normal(0.1, 0.03))), float(abs(rng.normal(0.1, 0.03)))]
+    return traj.event_trajectory(_LCm(days, filters, mags, errs),
+                                 grid=traj.TRAJECTORY_GRID, window=5.0)
+_rng_real_traj = np.random.default_rng(17)
+_real_traj_sig = [_mk_real_traj_event(_rng_real_traj, 21.0, 20.0) for _ in range(60)]
+_real_traj_bg = [_mk_real_traj_event(_rng_real_traj, 22.0, 20.5) for _ in range(60)]
+_real_traj_w = np.full(60, 1e-5)
+# Restricted to the gr-trajectory columns -- this fixture's light curves only ever
+# detect g/r, so every OTHER band pair's column is entirely NaN across the whole
+# population, which crashes HistGradientBoostingClassifier's binning step (same
+# known gotcha as the existing "inherits the sparse-corner blend" test above).
+# self.monotonic_column_groups still covers the full TRAJECTORY_MAGNITUDE_KEYS
+# regardless of this `keys` restriction (set unconditionally from self.extra in
+# __init__), so the monotonicity fix is still exercised end to end here too.
+_gr_traj_keys = [f'gr{traj._step_suffix(d)}' for d in traj.TRAJECTORY_GRID]
+_real_traj_clf = TrajectoryClassifier(keys=_gr_traj_keys, n_uncertainty_replicates=4)
+_real_traj_clf.fit(_real_traj_sig, _real_traj_bg, _real_traj_w, _real_traj_w)
+_real_traj_probe = _real_traj_clf.probability(_real_traj_sig[:5])
+check('TrajectoryClassifier fit+probability on a population of REAL event_trajectory '
+      'events (with real duplicate-observation and cumulative-peakmag structure) produces '
+      'finite, in-range output end to end',
+      np.all(np.isfinite(_real_traj_probe)) and np.all((_real_traj_probe >= 0) & (_real_traj_probe <= 1)),
+      _real_traj_probe.tolist())
+
+# M6: verify the monotonicity invariant survives INSIDE the actual KDE cache
+# (_kde_subset_for_pattern's stored, post-replication subset), not just inferred
+# from "probability() didn't crash and stayed in [0,1]".
+from cmsne.classifier import _finite_pattern
+_real_traj_Xq, _ = colour_feature_matrix(_real_traj_sig[:1], _real_traj_clf.keys, _real_traj_clf.extra)
+_real_traj_pattern = _finite_pattern(_real_traj_Xq[0])
+_real_traj_dims = np.where(np.asarray(_real_traj_pattern))[0]
+_real_traj_subset = _real_traj_clf._kde_subset_for_pattern(_real_traj_pattern, _real_traj_dims)
+_real_traj_mag_idx = [_real_traj_clf.columns.index(k) for k in TRAJECTORY_MAGNITUDE_KEYS]
+check('inside the REAL, post-replication KDE-cached training subset, every cumulative-'
+      'peakmag row (signal side) stays non-increasing across the grid-step sequence',
+      np.all(np.diff(_real_traj_subset.Xs[:, _real_traj_mag_idx], axis=1) <= 0))
+check('inside the REAL, post-replication KDE-cached training subset, every cumulative-'
+      'peakmag row (background side) stays non-increasing across the grid-step sequence',
+      np.all(np.diff(_real_traj_subset.Xb[:, _real_traj_mag_idx], axis=1) <= 0))
+
+
+print('\n=== final review fix: _replicate_with_uncertainty is batch/row-order independent ===')
+# Finding from the final whole-branch review: _replicate_with_uncertainty drew noise
+# from one shared rng stream across the WHOLE call's perturbable rows, so a given
+# row's draws depended on how many OTHER rows preceded it in the same call -- i.e.
+# the same logical event (same X, same sigma) got DIFFERENT replicated values
+# depending on what else shared its batch, so score()/predict() on a query event
+# could change depending on what else was in the list passed alongside it.
+_bi_sigma_row = np.array([[2.0]])
+_bi_X_row = np.array([[5.0]])
+_bi_Xr_alone, _, _ = _replicate_with_uncertainty(_bi_X_row, _bi_sigma_row, np.array([1.0]), np.array([0]), 8)
+
+_bi_sigma_pair = np.array([[2.0], [2.0]])
+_bi_X_pair = np.array([[3.0], [5.0]])  # the row of interest (5.0) now has ONE other row before it
+_bi_Xr_pair, _, _bi_eid_pair = _replicate_with_uncertainty(
+    _bi_X_pair, _bi_sigma_pair, np.array([1.0, 1.0]), np.array([0]), 8)
+_bi_row5_in_pair = np.sort(_bi_Xr_pair[_bi_eid_pair == 1, 0])
+check('the SAME logical row\'s replicated values are identical whether it is replicated '
+      'alone or preceded by another row in the same call (previously depended on batch order)',
+      np.allclose(np.sort(_bi_Xr_alone[:, 0]), _bi_row5_in_pair),
+      (np.sort(_bi_Xr_alone[:, 0]), _bi_row5_in_pair))
+
+# Same fix must also decorrelate independent rows: signal and background training
+# rows replicated in separate calls with the same default seed must NOT receive
+# the same underlying noise sequence (previously true since both calls freshly
+# seeded the SAME global seed=0).
+_bi_sigma_dummy = np.full((5, 1), 0.2)
+_bi_X_a = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+_bi_X_b = np.array([[10.0], [20.0], [30.0], [40.0], [50.0]])
+_bi_Xa_rep, _, _ = _replicate_with_uncertainty(_bi_X_a, _bi_sigma_dummy, np.full(5, 1.0), np.array([0]), 8)
+_bi_Xb_rep, _, _ = _replicate_with_uncertainty(_bi_X_b, _bi_sigma_dummy, np.full(5, 1.0), np.array([0]), 8)
+_bi_noise_a = (_bi_Xa_rep[:, 0] - np.repeat(_bi_X_a[:, 0], 8))
+_bi_noise_b = (_bi_Xb_rep[:, 0] - np.repeat(_bi_X_b[:, 0], 8))
+check('two independent arrays replicated with the same default seed get DIFFERENT '
+      'noise (previously identical, since both reused the same fresh seed=0 stream)',
+      not np.allclose(_bi_noise_a, _bi_noise_b))
+
+print('\n=== final review fix: replication does not trigger spurious early-stopping ===')
+# Finding: HistGradientBoostingClassifier's early_stopping='auto' (the default)
+# engages once n_samples > 10,000. Replication multiplies the row count the
+# tree actually trains on by n_uncertainty_replicates, so a population whose
+# ORIGINAL size would never have triggered auto early-stopping can cross that
+# threshold once replicated -- a replication-induced behaviour change, not
+# just added noise. Worse, HGB's internal train/validation split can then put
+# near-duplicate replicas of the SAME event on both sides, so validation loss
+# looks artificially good. early_stopping must be decided from the ORIGINAL
+# (pre-replication) sample count, matching what sklearn's own 'auto' would
+# have decided with no replication in play.
+_es_rng = np.random.default_rng(31)
+_n_es = 700  # 700 signal + 700 background = 1400 original rows, well under 10,000 alone
+_es_sig = [{'gr': float(_es_rng.normal(1.0, 0.3)), 'peakmag': float(_es_rng.normal(22.0, 1.0)),
+            'gr_err': 0.2} for _ in range(_n_es)]
+_es_bg = [{'gr': float(_es_rng.normal(1.3, 0.3)), 'peakmag': float(_es_rng.normal(22.0, 1.0)),
+           'gr_err': 0.2} for _ in range(_n_es)]
+_es_w = np.full(_n_es, 1e-5)
+# n_uncertainty_replicates=8 (default) x 1400 = 11,200 > 10,000 -- sklearn's own
+# early_stopping='auto' heuristic only sees this REPLICATED count and would enable
+# it, even though the "samples" it would validate against are near-duplicate
+# (noise-perturbed) copies of only 1,400 distinct original events -- siblings can
+# land on both sides of its internal train/validation split, so validation loss
+# doesn't hold anything genuinely out. Test the DECISION directly (not n_iter_,
+# which this exact leakage can make an unreliable proxy either direction).
+_es_clf = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False)
+_es_clf.fit(_es_sig, _es_bg, _es_w, _es_w)
+check('early_stopping is explicitly disabled when noise-injection replication actually '
+      'occurred, overriding sklearn\'s own auto-heuristic which only sees the inflated '
+      'REPLICATED sample count',
+      _es_clf.clf.get_params()['early_stopping'] is False)
+
+# No-op case (no uncertainty data anywhere) must be entirely unchanged: early_stopping
+# stays at sklearn's own default exactly as before this fix.
+_es_clf_noerr = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False)
+_es_clf_noerr.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
+check('early_stopping is left at sklearn\'s own default when no replication occurred '
+      '(true no-op, unaffected by this fix)',
+      _es_clf_noerr.clf.get_params()['early_stopping'] == 'auto')
+
+# An explicit user override of early_stopping must always be respected, whether or
+# not replication occurs.
+_es_clf_override = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                                    early_stopping=True)
+_es_clf_override.fit(_es_sig, _es_bg, _es_w, _es_w)
+check('an explicit early_stopping=True passed by the caller is never overridden by this fix',
+      _es_clf_override.clf.get_params()['early_stopping'] is True)
+
+print('\n=== second-pass review fix: early_stopping decision does not depend on whether '
+      'replication happened, only on ORIGINAL row count ===')
+# Finding: the FIRST fix decided early_stopping purely from "did replication occur",
+# always forcing False when it did. On real BlueBEAR production data the ORIGINAL
+# population already exceeds 10,000 rows (sklearn's own 'auto' threshold), so this
+# made n_uncertainty_replicates=1 (no-op, early_stopping stays 'auto' -> effectively
+# True) and n_uncertainty_replicates=8 (forced False) train under DIFFERENT
+# early_stopping regimes purely as an accident of replication, confounding the
+# Manual Validation sweep's n_uncertainty_replicates axis with an unrelated
+# early-stopping/capacity change, not noise injection alone. (The fix landed here --
+# always False, with max_iter pinned to a reference fit -- was itself superseded by
+# the third-pass fix further below, once matching the FLAG was found not to fix the
+# underlying leak; this section's own check now asserts the CURRENT, final
+# behaviour, not the intermediate one.)
+_eso_rng = np.random.default_rng(32)
+_n_eso = 6000  # 6000 signal + 6000 background = 12000 original rows, ABOVE 10,000 alone
+_eso_sig = [{'gr': float(_eso_rng.normal(1.0, 0.3)), 'peakmag': float(_eso_rng.normal(22.0, 1.0)),
+             'gr_err': 0.2} for _ in range(_n_eso)]
+_eso_bg = [{'gr': float(_eso_rng.normal(1.3, 0.3)), 'peakmag': float(_eso_rng.normal(22.0, 1.0)),
+            'gr_err': 0.2} for _ in range(_n_eso)]
+_eso_w = np.full(_n_eso, 1e-5)
+_eso_clf_rep = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                                n_uncertainty_replicates=8)
+_eso_clf_rep.fit(_eso_sig, _eso_bg, _eso_w, _eso_w)
+# Superseded by the third-pass fix below: matching the FLAG alone (early_stopping=True
+# for both K=1 and K=8) turned out not to fix the real leak (HGB's internal validation
+# split has no concept of replica siblings), so the implementation now always disables
+# early_stopping and pins max_iter to a reference fit's discovered value whenever
+# replication occurs with no explicit override -- never leaves it as True itself.
+check('early_stopping is explicitly False (with max_iter pinned, not sklearn\'s own '
+      'decision) once replication is active and the caller has not set it themselves, '
+      'regardless of whether the ORIGINAL row count was above or below 10,000',
+      _eso_clf_rep.clf.get_params()['early_stopping'] is False,
+      _eso_clf_rep.clf.get_params()['early_stopping'])
+
+check('min_samples_leaf is scaled by n_uncertainty_replicates when replication actually '
+      'occurs, so a "leaf" still requires ~20 REAL distinct events\' worth of replica rows '
+      '(sklearn\'s own default of 20 would otherwise count replica rows, making a leaf only '
+      '20/K real events -- a tree-capacity increase stacking on top of noise smoothing, not '
+      'noise injection alone)',
+      _eso_clf_rep.clf.get_params()['min_samples_leaf'] == 20 * 8,
+      _eso_clf_rep.clf.get_params()['min_samples_leaf'])
+
+_eso_clf_noinj = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                                  n_uncertainty_replicates=1)
+_eso_clf_noinj.fit(_eso_sig, _eso_bg, _eso_w, _eso_w)
+check('min_samples_leaf is left at sklearn\'s own default (20) when no replication '
+      'occurs (n_uncertainty_replicates=1, true no-op)',
+      _eso_clf_noinj.clf.get_params()['min_samples_leaf'] == 20,
+      _eso_clf_noinj.clf.get_params()['min_samples_leaf'])
+
+print('\n=== third-pass review fix: K=1 and K=8 get IDENTICAL effective n_iter_, not just '
+      'matching early_stopping flags ===')
+# Finding: matching the early_stopping FLAG (the fix above) does not fix the leak --
+# HistGradientBoostingClassifier's own internal validation split has no concept of
+# "replica siblings", so at K=8 near-duplicate replicas can land on BOTH sides of
+# that split, letting validation loss track training loss almost exactly and never
+# triggering a stop -- n_iter_ silently diverges toward max_iter even with
+# early_stopping=True on both sides, while K=1 (no replication, no such leakage)
+# genuinely stops early. Fixed by precomputing n_iter_ from a one-time reference fit
+# on the ORIGINAL data, then pinning the replicated fit's max_iter to that exact
+# value with early_stopping explicitly off.
+# Fourth-pass review finding (C1): an earlier version of this fixture (gr means
+# 4 stds apart) was perfectly separable enough that validation loss plateaus
+# IDENTICALLY whether or not replica siblings leak across HGB's internal split --
+# round-2's own buggy (flag-only) code ALSO landed on the same n_iter_ there,
+# making that test unable to tell fixed from broken (verified directly: the
+# old flag-only logic, reconstructed on that fixture's own replicated data,
+# gave 43 -- the SAME as this fix's 43). This fixture (means only 0.3 apart,
+# l2_regularization=0 -- the default 1.0 keeps the loss improving past
+# max_iter=300 regardless of separation) is weakly-enough separable that the
+# leak DOES change the outcome. Rather than trust one specific seed/gap to stay
+# discriminating forever, the test PROVES it discriminates every run: it
+# reconstructs the OLD (flag-only, pre-this-fix) logic directly on the SAME
+# replicated data and asserts it actually diverges from K=1's own n_iter_,
+# before checking that the ACTUAL (fixed) code does NOT diverge.
+_niter_rng = np.random.default_rng(1)
+_n_niter = 6000
+_niter_sig = [{'gr': float(_niter_rng.normal(1.0, 0.3)), 'gr_err': 0.05} for _ in range(_n_niter)]
+_niter_bg = [{'gr': float(_niter_rng.normal(1.3, 0.3)), 'gr_err': 0.05} for _ in range(_n_niter)]
+_niter_w = np.full(_n_niter, 1e-5)
+_niter_clf_k1 = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=False,
+                                 n_uncertainty_replicates=1, l2_regularization=0.0)
+_niter_clf_k1.fit(_niter_sig, _niter_bg, _niter_w, _niter_w)
+_niter_clf_k8 = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=False,
+                                 n_uncertainty_replicates=8, l2_regularization=0.0)
+_niter_clf_k8.fit(_niter_sig, _niter_bg, _niter_w, _niter_w)
+check('fixture check: early stopping genuinely fires for K=1 on this fixture '
+      '(n_iter_ well below max_iter=300), so the comparisons below are not vacuous',
+      _niter_clf_k1.clf.n_iter_ < 300, _niter_clf_k1.clf.n_iter_)
+
+from sklearn.ensemble import HistGradientBoostingClassifier as _HGBCForTest
+_niter_Xs, _ = colour_feature_matrix(_niter_sig, ['gr'], ())
+_niter_Xb, _ = colour_feature_matrix(_niter_bg, ['gr'], ())
+_niter_sigma_s = colour_feature_sigma_matrix(_niter_sig, ['gr'], ())
+_niter_sigma_b = colour_feature_sigma_matrix(_niter_bg, ['gr'], ())
+_niter_dims = np.arange(1)
+_niter_Xs_rep, _niter_ws_rep, _ = _replicate_with_uncertainty(
+    _niter_Xs, _niter_sigma_s, _niter_w, _niter_dims, 8)
+_niter_Xb_rep, _niter_wb_rep, _ = _replicate_with_uncertainty(
+    _niter_Xb, _niter_sigma_b, _niter_w, _niter_dims, 8)
+_niter_X_old = np.vstack([_niter_Xs_rep, _niter_Xb_rep])
+_niter_y_old = np.r_[np.ones(len(_niter_Xs_rep)), np.zeros(len(_niter_Xb_rep))]
+_niter_w_old = np.r_[_niter_ws_rep, _niter_wb_rep]
+_niter_old_style = _HGBCForTest(max_depth=4, learning_rate=0.1, max_iter=300, l2_regularization=0.0,
+                                min_samples_leaf=160, random_state=0, early_stopping=True).fit(
+    _niter_X_old, _niter_y_old, sample_weight=_niter_w_old)
+check('fixture check: this fixture genuinely DISCRIMINATES -- the OLD (flag-only, '
+      'round-2) logic reconstructed on the SAME replicated data actually diverges '
+      'from K=1\'s own n_iter_, proving the leak this fix addresses is real for this '
+      'fixture (not a case where the bug and the fix coincidentally agree)',
+      _niter_old_style.n_iter_ != _niter_clf_k1.clf.n_iter_,
+      (_niter_clf_k1.clf.n_iter_, _niter_old_style.n_iter_))
+check('with the ACTUAL fix: K=1 (no-op, sklearn\'s own \'auto\' on the original data) '
+      'and K=8 (replicated, pinned to a reference fit\'s discovered n_iter_) train for '
+      'the EXACT SAME number of effective boosting iterations -- K=8 does NOT diverge '
+      'the way the reconstructed OLD logic (checked above) does on this SAME fixture',
+      _niter_clf_k1.clf.n_iter_ == _niter_clf_k8.clf.n_iter_,
+      (_niter_clf_k1.clf.n_iter_, _niter_clf_k8.clf.n_iter_))
+
+# calibrate=True (the actual default): CalibratedClassifierCV's own cv=3 folds each
+# train on a different ~2/3 subset, so K=1 itself has NO single canonical n_iter_ to
+# match in the first place -- its own 3 folds naturally land on 3 different values.
+# The exact-match guarantee above is therefore specific to calibrate=False; under
+# calibrate=True it reduces to a documented, weaker one (see the KNOWN LIMITATION
+# comment in fit()). What IS cleanly, deterministically true regardless -- and
+# tested here -- is that this fix's own pinning is internally CONSISTENT: every one
+# of K>1's CalibratedClassifierCV folds gets the SAME n_iter_ (all pinned to the one
+# reference value), not three different ones the way K=1's folds naturally do.
+_niter_cal_rng = np.random.default_rng(1)
+_n_niter_cal = 15000  # 15000+15000=30000 total, comfortably above both the 10k and
+                      # 15k thresholds the calibrate=True KNOWN LIMITATION concerns
+_niter_cal_sig = [{'gr': float(_niter_cal_rng.normal(1.0, 0.3)), 'gr_err': 0.05}
+                  for _ in range(_n_niter_cal)]
+_niter_cal_bg = [{'gr': float(_niter_cal_rng.normal(1.3, 0.3)), 'gr_err': 0.05}
+                 for _ in range(_n_niter_cal)]
+_niter_cal_w = np.full(_n_niter_cal, 1e-5)
+_niter_cal_clf = ColourClassifier(keys=['gr'], include_peakmag=False, calibrate=True,
+                                  n_uncertainty_replicates=8, l2_regularization=0.0)
+_niter_cal_clf.fit(_niter_cal_sig, _niter_cal_bg, _niter_cal_w, _niter_cal_w)
+_niter_cal_fold_iters = [cc.estimator.n_iter_ for cc in _niter_cal_clf.clf.calibrated_classifiers_]
+check('fixture check: early stopping genuinely fires under calibrate=True too (fold '
+      'n_iter_ well below max_iter=300), so the consistency check below could not '
+      'pass merely because every fold trivially hit the same ceiling',
+      _niter_cal_fold_iters[0] < 300, _niter_cal_fold_iters)
+check('under calibrate=True (the actual default) at production-like scale, every '
+      'CalibratedClassifierCV fold is pinned to the IDENTICAL n_iter_ (internal '
+      'consistency of this fix\'s own pinning, regardless of the documented K=1-vs-'
+      'K>1 fold-variance limitation above)',
+      len(set(_niter_cal_fold_iters)) == 1, _niter_cal_fold_iters)
+
+_m2_clf = ColourClassifier(keys=['gr'], include_peakmag=True, calibrate=False,
+                           n_uncertainty_replicates=8, early_stopping=True)
+_m2_clf.fit(_eso_sig, _eso_bg, _eso_w, _eso_w)
+check('min_samples_leaf is still scaled by K even when the caller explicitly sets '
+      'early_stopping themselves (previously nested inside the same guard, so an '
+      'explicit early_stopping override silently lost the min_samples_leaf scaling too)',
+      _m2_clf.clf.get_params()['min_samples_leaf'] == 20 * 8,
+      _m2_clf.clf.get_params()['min_samples_leaf'])
+check('an explicit early_stopping=True from the caller is still never overridden by '
+      'the reference-fit mechanism',
+      _m2_clf.clf.get_params()['early_stopping'] is True)
+
+print('\n=== final review fix: threshold calibration matches what predict() actually compares against ===')
+# Finding: self.threshold was calibrated from raw self.clf.predict_proba(Xb), but
+# predict()/recovery_rate()/roc_curve() all compare it against self.score(), which
+# Task 3 redefined to average over each query event's OWN replicas -- a different
+# quantity whenever real uncertainty data is present. Tested directly against the
+# implementation (self.threshold must reproduce weighted_quantile(self.score(...)))
+# rather than via the realized FPR, which this project's isotonic calibration can
+# make a flaky/confounded statistic (large plateaus of tied calibrated values mean
+# weighted_quantile's exact-quantile convention doesn't land cleanly on target_fpr
+# even when calibrated against the CORRECT quantity -- a separate, pre-existing
+# property of CalibratedClassifierCV + weighted_quantile, not something this plan
+# introduced or is in scope to fix).
+_th_rng = np.random.default_rng(3)
+_n_th = 1500
+_th_sig = [{'gr': float(_th_rng.normal(1.0, 0.3)), 'peakmag': float(_th_rng.normal(22.0, 1.0)),
+            'gr_err': 0.3} for _ in range(_n_th)]
+_th_bg = [{'gr': float(_th_rng.normal(1.3, 0.3)), 'peakmag': float(_th_rng.normal(22.0, 1.0)),
+           'gr_err': 0.3} for _ in range(_n_th)]
+_th_w = np.full(_n_th, 1e-5)
+_th_clf = ColourClassifier(keys=['gr'], include_peakmag=True, target_fpr=0.10)
+_th_clf.fit(_th_sig, _th_bg, _th_w, _th_w)
+_th_expected_threshold = cm.weighted_quantile(_th_clf.score(_th_bg), _th_w, q=1.0 - _th_clf.target_fpr)
+check('self.threshold is computed from self.score(background_events) -- the SAME '
+      'quantity predict()/recovery_rate()/roc_curve() apply it against -- not from '
+      'raw predict_proba, a different quantity once real uncertainty data makes '
+      'score() average over replicas',
+      np.isclose(_th_clf.threshold, _th_expected_threshold),
+      (_th_clf.threshold, _th_expected_threshold))
 
 
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')

@@ -15,6 +15,9 @@ feature keys you have. Multi-colour events (:class:`cmsne.multicolour`) expose
 expose ``lensed_colour`` and ``band_1_mag_l``.
 """
 
+import hashlib
+from typing import NamedTuple
+
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.calibration import CalibratedClassifierCV
@@ -43,6 +46,11 @@ DEFAULT_ESS_THRESHOLD = 10.0
 DEFAULT_LOG_WIDTH = 0.3
 DEFAULT_KDE_MAX_EVENTS = 4000
 DEFAULT_KDE_MIN_ESS = 10.0
+# Uncertainty-aware noise injection (see docs/superpowers/specs/
+# 2026-10-26-uncertainty-aware-noise-injection-design.md). Provisional, like
+# the other blend constants above -- tuned against real data in this plan's
+# own Manual Validation step.
+DEFAULT_N_UNCERTAINTY_REPLICATES = 8
 
 
 def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
@@ -56,6 +64,24 @@ def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEA
     X = np.array([[float(e.get(c, np.nan)) if e.get(c, None) is not None else np.nan
                    for c in columns] for e in events], dtype=float)
     return X, columns
+
+
+def colour_feature_sigma_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
+    """Stack ``events``' per-feature measurement uncertainty (``f'{c}_err'``)
+    into a matrix matching :func:`colour_feature_matrix`'s column order.
+
+    Missing/absent ``_err`` entries become NaN -- :func:`_replicate_with_uncertainty`
+    treats this as "nothing to perturb with", not an error. ``peakmag_fit`` in
+    particular has no ``_err`` companion anywhere in this codebase (see
+    docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md)
+    and will always read NaN here.
+
+    :return: ``(n, d)`` sigma matrix, same column order as :func:`colour_feature_matrix`.
+    """
+    columns = list(keys) + [k for k in extra if k]
+    sigma = np.array([[float(e.get(f'{c}_err', np.nan)) if e.get(f'{c}_err', None) is not None else np.nan
+                        for c in columns] for e in events], dtype=float)
+    return sigma
 
 
 def _weighted_std(values, weights):
@@ -125,7 +151,136 @@ def _kernel_weighted_values(x, X, weights, bandwidths, dims):
     return np.asarray(weights, dtype=float) * k
 
 
-def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0, max_iter=20):
+def _row_content_seed(base_seed, x_row, sigma_row):
+    """Deterministic seed derived from a row's OWN feature + sigma values (not
+    from its position in any particular array/batch), so replicating the same
+    logical event always draws the same noise regardless of what else shares
+    the call -- see :func:`_replicate_with_uncertainty`.
+    """
+    payload = np.concatenate([[float(base_seed)], np.nan_to_num(x_row, nan=-1e18),
+                               np.nan_to_num(sigma_row, nan=-1e18)]).astype(np.float64)
+    digest = hashlib.sha256(payload.tobytes()).digest()
+    return int.from_bytes(digest[:8], 'little') % (2 ** 32)
+
+
+def _replicate_with_uncertainty(X, sigma, weights, dims, n_replicates, seed=0, monotonic_groups=None):
+    """Expand each row of ``X`` into ``n_replicates`` noisy copies, perturbed
+    per dimension in ``dims`` by that row's own ``sigma`` (non-finite or
+    non-positive sigma leaves that dimension exactly as-is for every
+    replica of that row -- nothing to perturb with is not an error). Each
+    replica carries ``weights / n_replicates``, so summed weight mass per
+    original row is preserved exactly.
+
+    Each row draws its noise from an independent RNG stream seeded from
+    ``(seed, that row's own X, that row's own sigma)`` -- NOT from its
+    position in ``X`` or from a single stream shared across every row in the
+    call. This guarantees the same logical event (same features, same
+    uncertainty) always replicates to the same values regardless of what
+    else shares the call -- e.g. ``score([a, b])[1]`` and ``score([b])[0]``
+    must agree for the same event ``b``, which a single shared RNG stream
+    cannot guarantee (a row's draws would otherwise depend on how many other
+    perturbable rows preceded it in that specific call).
+
+    Within one row, perturbable dimensions sharing the EXACT SAME
+    ``(value, sigma)`` pair draw a single shared noise offset instead of
+    independent ones -- two columns this close are almost certainly the
+    same underlying physical measurement (e.g. two trajectory grid steps
+    whose nearest-detection window picked the identical observation; see
+    docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md),
+    and treating them as independently-remeasured would let them drift
+    apart under perturbation when the real uncertainty is perfectly
+    correlated between them. For the static multicolour schema, where
+    columns are independent real-valued measurements, two columns
+    essentially never land on bit-identical floats, so every group is a
+    singleton and this is a true no-op (same RNG consumption order as
+    drawing independently, since groups are visited in each dimension's
+    first-occurrence order).
+
+    :param monotonic_groups: optional list of column-index sequences (each
+        in the order a per-replica running minimum must hold along, e.g.
+        chronological grid-step order for a cumulative-best magnitude).
+        After perturbation, each sequence is replaced by its own running
+        minimum per replica (``np.minimum.accumulate``) -- independently
+        perturbing columns that are really one running-minimum trajectory
+        can otherwise produce a physically impossible feature vector (a
+        "cumulative best" that gets fainter over time). ``None`` (the
+        default, every pre-existing caller) applies no such constraint.
+
+        PRECONDITION: within a group, NaN entries must only ever be
+        TRAILING (a not-yet-revealed future step, as
+        :func:`cmsne.trajectory.reveal_up_to`/:func:`cmsne.trajectory.event_trajectory`
+        always produce) -- ``np.minimum.accumulate`` then correctly leaves
+        every hidden step NaN (propagating forward from the first NaN it
+        meets), matching "we don't know this yet". A LEADING NaN earlier
+        than a finite entry would instead poison every later entry in the
+        group to NaN too (``np.minimum`` always propagates NaN once it
+        appears). ``np.fmin.accumulate`` would fix that leading-NaN case,
+        but at the cost of silently un-hiding a genuinely-masked trailing
+        NaN by filling it with the last finite value instead of keeping it
+        NaN -- a worse, silent regression for this primitive's one real
+        caller, so this function does not use it.
+
+    :return: ``(X_rep, w_rep, event_id)``. ``event_id[k]`` is the index into
+        the ORIGINAL ``X``/``weights`` that ``X_rep[k]`` came from -- needed
+        to group replicas back together (e.g. for
+        :func:`_grouped_effective_sample_size`).
+
+    If every entry of ``sigma[:, dims]`` is non-finite or non-positive (no
+    real uncertainty data available), or ``n_replicates <= 1``, or ``dims``
+    is empty, returns ``(X, weights, np.arange(len(X)))`` unchanged -- zero
+    extra compute, exact backward compatibility with any population/fixture
+    lacking uncertainty fields.
+    """
+    X = np.asarray(X, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    sigma = np.asarray(sigma, dtype=float)
+    dims = np.asarray(dims, dtype=int)
+    if n_replicates <= 1 or len(dims) == 0 or not np.any(np.isfinite(sigma[:, dims]) & (sigma[:, dims] > 0)):
+        return X, weights, np.arange(len(X))
+
+    n = len(X)
+    X_rep = np.repeat(X, n_replicates, axis=0)
+    event_id = np.repeat(np.arange(n), n_replicates)
+    for i in range(n):
+        row_sigma = sigma[i, dims]
+        perturbable_dims = dims[np.isfinite(row_sigma) & (row_sigma > 0)]
+        if len(perturbable_dims) == 0:
+            continue
+        rng = np.random.default_rng(_row_content_seed(seed, X[i], sigma[i]))
+        sl = slice(i * n_replicates, (i + 1) * n_replicates)
+        groups = {}
+        for d in perturbable_dims:
+            groups.setdefault((X[i, d], sigma[i, d]), []).append(d)
+        for group_dims in groups.values():
+            offset = rng.normal(0.0, sigma[i, group_dims[0]], size=n_replicates)
+            for d in group_dims:
+                X_rep[sl, d] += offset
+    if monotonic_groups:
+        for group in monotonic_groups:
+            X_rep[:, group] = np.minimum.accumulate(X_rep[:, group], axis=1)
+    w_rep = np.repeat(weights, n_replicates) / n_replicates
+    return X_rep, w_rep, event_id
+
+
+def _grouped_effective_sample_size(g, event_id, n_original):
+    """Kish's effective sample size computed AFTER summing each original
+    event's noise-injection replicas' values back together, so
+    ``n_replicates`` correlated copies of one real observation contribute
+    ESS ~1, not ~n_replicates (see docs/superpowers/specs/
+    2026-10-26-uncertainty-aware-noise-injection-design.md). Reduces to a
+    plain :func:`~cmsne.importance_sampling.effective_sample_size` call
+    when ``event_id`` is trivial (``np.arange(n_original)``, i.e. no
+    replication occurred).
+    """
+    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+    from .importance_sampling import effective_sample_size
+
+    g_grouped = np.bincount(event_id, weights=g, minlength=n_original)
+    return effective_sample_size(g_grouped)
+
+
+def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0, max_iter=20,
+                            event_id=None, n_original=None):
     """Kernel-weighted values at ``x``, with the kernel's bandwidth
     isotropically widened (by ``growth`` per iteration, up to ``max_iter``
     times) until the resulting local ESS reaches ``min_ess``, or until
@@ -140,24 +295,35 @@ def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0,
     tree-vs-KDE blend-weight decision, which stays on the fixed-bandwidth
     ESS computed separately in :func:`_local_density_ratio`.
 
+    :param event_id, n_original: if ``X``/``weights`` hold noise-injection
+        replicas of the same original training events (see
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md),
+        pass the replica-to-original mapping here so ESS is computed on
+        each original event's GROUPED contribution, not per replica --
+        otherwise ``n_replicates`` copies of one real point would look
+        like ``n_replicates`` independent points. ``None`` (the default,
+        used by every pre-existing direct caller) means no replication is
+        in play: a trivial, non-grouping mapping is used.
     :return: ``(g, ess)`` -- the kernel-weighted values and the local ESS
         at whichever scale the widening stopped at.
     """
-    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
-    from .importance_sampling import effective_sample_size
+    if event_id is None:
+        event_id = np.arange(len(weights))
+    if n_original is None:
+        n_original = len(weights)
 
     scale = 1.0
     g = _kernel_weighted_values(x, X, weights, bandwidths, dims)
-    ess = effective_sample_size(g)
+    ess = _grouped_effective_sample_size(g, event_id, n_original)
     if ess >= min_ess:
         return g, ess
-    ceiling = effective_sample_size(weights)
+    ceiling = _grouped_effective_sample_size(weights, event_id, n_original)
     for _ in range(max_iter):
         if ess >= min_ess or ess >= ceiling - 1e-9:
             break
         scale *= growth
         g_new = _kernel_weighted_values(x, X, weights, bandwidths * scale, dims)
-        ess_new = effective_sample_size(g_new)
+        ess_new = _grouped_effective_sample_size(g_new, event_id, n_original)
         if ess_new <= ess:
             ess = ess_new
             break
@@ -166,11 +332,14 @@ def _widened_kernel_values(x, X, weights, bandwidths, dims, min_ess, growth=2.0,
 
 
 def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAULT_KDE_MIN_ESS,
-                          ess_ceiling_sig=None, ess_ceiling_bg=None):
+                          ess_ceiling_sig=None, ess_ceiling_bg=None,
+                          event_id_s=None, event_id_b=None, n_orig_s=None, n_orig_b=None):
     """Local weighted kernel density ratio and local ESS at point ``x``.
 
-    :param Xs, ws: signal training feature matrix and rate weights.
-    :param Xb, wb: background training feature matrix and rate weights.
+    :param Xs, ws: signal training feature matrix and rate weights -- may
+        hold noise-injection replicas of fewer original events (see
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+    :param Xb, wb: background training feature matrix and rate weights, same caveat.
     :param min_kde_ess: minimum effective sample size each class's kernel is
         adaptively widened to reach before computing the density ratio (see
         :func:`_widened_kernel_values`). This does NOT affect
@@ -190,6 +359,10 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
         never on ``x``, so recomputing them on every call is wasted work at
         this project's training-set scale. ``None`` (the default, used by
         one-off/direct callers) computes them here instead.
+    :param event_id_s, event_id_b, n_orig_s, n_orig_b: replica-to-original
+        mapping for ``Xs``/``Xb`` respectively (see
+        :func:`_widened_kernel_values`). ``None`` (the default, used by
+        every pre-existing direct caller) means no replication is in play.
     :return: ``(p_kde, local_ess_sig, local_ess_bg)``. ``p_kde`` is ``None``
         when both classes' FIXED-bandwidth kernel-weighted mass underflows
         to (numerically) zero at ``x`` -- the degenerate case callers fall
@@ -198,13 +371,19 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
         information from either class is never "rescued" into a
         near-arbitrary ratio by widening far enough to reach unrelated data.
     """
-    # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
-    from .importance_sampling import effective_sample_size
+    if event_id_s is None:
+        event_id_s = np.arange(len(ws))
+    if n_orig_s is None:
+        n_orig_s = len(ws)
+    if event_id_b is None:
+        event_id_b = np.arange(len(wb))
+    if n_orig_b is None:
+        n_orig_b = len(wb)
 
     gs_fixed = _kernel_weighted_values(x, Xs, ws, bandwidths, dims)
     gb_fixed = _kernel_weighted_values(x, Xb, wb, bandwidths, dims)
-    local_ess_sig = effective_sample_size(gs_fixed)
-    local_ess_bg = effective_sample_size(gb_fixed)
+    local_ess_sig = _grouped_effective_sample_size(gs_fixed, event_id_s, n_orig_s)
+    local_ess_bg = _grouped_effective_sample_size(gb_fixed, event_id_b, n_orig_b)
     if float(np.sum(gs_fixed)) + float(np.sum(gb_fixed)) < 1e-300:
         return None, local_ess_sig, local_ess_bg
 
@@ -214,15 +393,17 @@ def _local_density_ratio(x, Xs, ws, Xb, wb, bandwidths, dims, min_kde_ess=DEFAUL
     # regardless of true distance, destroying locality rather than
     # recovering it. Use the fixed-bandwidth value unchanged instead.
     if ess_ceiling_sig is None:
-        ess_ceiling_sig = effective_sample_size(ws)
+        ess_ceiling_sig = _grouped_effective_sample_size(ws, event_id_s, n_orig_s)
     if ess_ceiling_bg is None:
-        ess_ceiling_bg = effective_sample_size(wb)
+        ess_ceiling_bg = _grouped_effective_sample_size(wb, event_id_b, n_orig_b)
     if ess_ceiling_sig >= min_kde_ess:
-        gs, _ = _widened_kernel_values(x, Xs, ws, bandwidths, dims, min_kde_ess)
+        gs, _ = _widened_kernel_values(x, Xs, ws, bandwidths, dims, min_kde_ess,
+                                        event_id=event_id_s, n_original=n_orig_s)
     else:
         gs = gs_fixed
     if ess_ceiling_bg >= min_kde_ess:
-        gb, _ = _widened_kernel_values(x, Xb, wb, bandwidths, dims, min_kde_ess)
+        gb, _ = _widened_kernel_values(x, Xb, wb, bandwidths, dims, min_kde_ess,
+                                        event_id=event_id_b, n_original=n_orig_b)
     else:
         gb = gb_fixed
 
@@ -261,20 +442,47 @@ def _weighted_subsample(X, weights, max_events, seed=0):
     since this becomes the KDE's own reference set, where duplicate points
     would distort local density estimates.
 
-    :return: ``(X_sub, weights_sub)``. If there are ``max_events`` or fewer
+    :return: ``(X_sub, weights_sub, chosen)``. ``chosen`` indexes into the
+        INPUT ``X``/``weights`` -- needed by callers that must align another
+        per-row array (e.g. per-event measurement-uncertainty sigma, see
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md)
+        with the same kept subsample. If there are ``max_events`` or fewer
         positive-weight rows, returns all of them (no subsampling), with
         weights unchanged.
     """
     weights = np.asarray(weights, dtype=float)
     positive = np.where(weights > 0)[0]
     if len(positive) <= max_events:
-        return X[positive], weights[positive]
+        return X[positive], weights[positive], positive
     wsum = weights[positive].sum()
     p = weights[positive] / wsum
     rng = np.random.default_rng(seed)
     chosen = rng.choice(positive, size=max_events, replace=False, p=p)
     kept_w = weights[chosen] * (wsum / weights[chosen].sum())
-    return X[chosen], kept_w
+    return X[chosen], kept_w, chosen
+
+
+class _KDEPatternSubset(NamedTuple):
+    """Per-pattern KDE reference set, cached by
+    :meth:`ColourClassifier._kde_subset_for_pattern`. ``Xs``/``ws``/``Xb``/``wb``
+    are the noise-injection-REPLICATED subset (see
+    docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md);
+    ``event_id_s``/``event_id_b`` map each replica back to its original
+    (capped, pre-replication) row, and ``n_orig_s``/``n_orig_b`` are how many
+    original rows that was -- both needed by
+    :func:`_grouped_effective_sample_size`. ``ess_ceiling_sig``/``ess_ceiling_bg``
+    are computed from the CAPPED, PRE-replication weights, not ``ws``/``wb``.
+    """
+    Xs: np.ndarray
+    ws: np.ndarray
+    Xb: np.ndarray
+    wb: np.ndarray
+    ess_ceiling_sig: float
+    ess_ceiling_bg: float
+    event_id_s: np.ndarray
+    event_id_b: np.ndarray
+    n_orig_s: int
+    n_orig_b: int
 
 
 class ColourClassifier:
@@ -301,7 +509,8 @@ class ColourClassifier:
                  magnitude_feature=DEFAULT_MAGNITUDE_FEATURE, target_fpr=0.10,
                  calibrate=True, ess_threshold=DEFAULT_ESS_THRESHOLD,
                  log_width=DEFAULT_LOG_WIDTH, kde_max_events=DEFAULT_KDE_MAX_EVENTS,
-                 kde_min_ess=DEFAULT_KDE_MIN_ESS, **hgb):
+                 kde_min_ess=DEFAULT_KDE_MIN_ESS,
+                 n_uncertainty_replicates=DEFAULT_N_UNCERTAINTY_REPLICATES, **hgb):
         self.keys = list(keys)
         if include_peakmag and magnitude_feature:
             if magnitude_feature not in MAGNITUDE_FEATURES:
@@ -321,6 +530,27 @@ class ColourClassifier:
         self.log_width = log_width
         self.kde_max_events = kde_max_events
         self.kde_min_ess = kde_min_ess
+        self.n_uncertainty_replicates = n_uncertainty_replicates
+        # Column-name groups (e.g. a cumulative-best magnitude's grid-step
+        # sequence) that must stay non-increasing per noise-injection replica
+        # -- see :func:`_replicate_with_uncertainty`'s ``monotonic_groups``.
+        # ``None`` here (the only value this base class ever sets) means no
+        # such structure exists in a plain colour/magnitude feature vector;
+        # :class:`cmsne.trajectory.TrajectoryClassifier` sets this to its own
+        # per-step magnitude keys in ITS ``__init__``, inheriting every other
+        # method (``fit``/``score``/the KDE blend) unchanged.
+        self.monotonic_column_groups = None
+
+    def _resolve_monotonic_groups(self):
+        """``self.monotonic_column_groups`` (column NAMES, set once in
+        ``__init__`` -- see there) resolved to column INDICES into
+        ``self.columns`` (only known after :meth:`fit` runs). ``None`` stays
+        ``None`` (the base class's own default, and every call site's
+        no-op)."""
+        if not self.monotonic_column_groups:
+            return None
+        return [[self.columns.index(name) for name in group]
+                for group in self.monotonic_column_groups]
 
     def fit(self, signal_events, background_events,
             signal_weights=None, background_weights=None):
@@ -335,36 +565,140 @@ class ColourClassifier:
         Xs, cols = colour_feature_matrix(signal_events, self.keys, self.extra)
         Xb, _ = colour_feature_matrix(background_events, self.keys, self.extra)
         self.columns = cols
+        sigma_s = colour_feature_sigma_matrix(signal_events, self.keys, self.extra)
+        sigma_b = colour_feature_sigma_matrix(background_events, self.keys, self.extra)
+        monotonic_groups = self._resolve_monotonic_groups()
 
         ws = np.ones(len(Xs)) if signal_weights is None else np.asarray(signal_weights, float)
         wb = np.ones(len(Xb)) if background_weights is None else np.asarray(background_weights, float)
         if ws.sum() > 0:
             ws = ws * (wb.sum() / ws.sum())            # balance totals
 
-        X = np.vstack([Xs, Xb])
-        y = np.r_[np.ones(len(Xs)), np.zeros(len(Xb))]
-        w = np.r_[ws, wb]
+        # Noise-injection replication for the TREE only, on the full balanced
+        # population -- see Global Constraints. _store_kde_training_data below
+        # keeps the ORIGINAL, un-replicated arrays; the KDE replicates lazily,
+        # per pattern, after its own kde_max_events cap (Task 4).
+        dims_all = np.arange(Xs.shape[1])
+        Xs_rep, ws_rep, _ = _replicate_with_uncertainty(
+            Xs, sigma_s, ws, dims_all, self.n_uncertainty_replicates, monotonic_groups=monotonic_groups)
+        Xb_rep, wb_rep, _ = _replicate_with_uncertainty(
+            Xb, sigma_b, wb, dims_all, self.n_uncertainty_replicates, monotonic_groups=monotonic_groups)
+
+        X = np.vstack([Xs_rep, Xb_rep])
+        y = np.r_[np.ones(len(Xs_rep)), np.zeros(len(Xb_rep))]
+        w = np.r_[ws_rep, wb_rep]
         # Signal and background totals are balanced, so the trained posterior is at a
-        # 0.5 prior; probability(prior=...) rescales it to any other prior.
+        # 0.5 prior; probability(prior=...) rescales it to any other prior. Uses the
+        # ORIGINAL ws/wb -- a class total is unaffected by replication either way
+        # (weights sum back exactly), but there is no reason to route this through
+        # the replicated arrays.
         self.train_prior = float(ws.sum() / (ws.sum() + wb.sum()))
 
-        base = HistGradientBoostingClassifier(**self.params)
+        params = dict(self.params)
+        replicated = len(Xs_rep) != len(Xs) or len(Xb_rep) != len(Xb)
+        if replicated:
+            if 'early_stopping' not in self.params:
+                # Matching the early_stopping FLAG between K=1 and K>1 is not
+                # enough: HistGradientBoostingClassifier's internal train/
+                # validation split (for early_stopping=True or 'auto') has no
+                # concept of "replica siblings" -- at K>1, near-duplicate
+                # replicas of the same original event can land on BOTH sides
+                # of that split, so validation loss tracks training loss
+                # almost exactly and the stop-on-plateau criterion silently
+                # never fires. n_iter_ then diverges towards max_iter even
+                # with the SAME flag value K=1 would have used, because K=1
+                # (no replication) has no such leakage and genuinely stops
+                # early. Precompute n_iter_ from a ONE-TIME reference fit on
+                # the ORIGINAL, un-replicated population (sklearn's own
+                # 'auto' decision, no leakage possible there), then fit the
+                # REPLICATED data with early_stopping explicitly OFF and
+                # max_iter pinned to that SAME discovered value -- this
+                # guarantees IDENTICAL effective model capacity between K=1
+                # and K>1 by construction (same data, same params, same
+                # random_state => the SAME n_iter_, not merely the same
+                # flag), rather than one of the two regimes silently training
+                # to very different depths (see docs/superpowers/specs/
+                # 2026-10-26-uncertainty-aware-noise-injection-design.md).
+                # KNOWN LIMITATION (not fixed, documented): this reference fit
+                # runs ONCE on the FULL original population and pins every
+                # replicated fold to that ONE discovered n_iter_. When
+                # `self.calibrate=True` (the default), K=1 itself has no
+                # single canonical n_iter_ to match in the first place --
+                # CalibratedClassifierCV's cv=3 folds each train on a
+                # different ~2/3 subset, so K=1's OWN three folds naturally
+                # land on three DIFFERENT n_iter_ values (measured: [33, 37,
+                # 42] at one 30,000-row scale). The "identical effective
+                # capacity" guarantee this fix provides is therefore exact
+                # only for `calibrate=False`. For `calibrate=True` what it
+                # actually guarantees is CONSISTENCY, not closeness to K=1:
+                # every K>1 fold is pinned to the identical value, and that
+                # value is the same regardless of K -- there is no "close to
+                # K=1" target to hit once K=1 itself has no single value
+                # (measured counterexample at a different seed: K=8 pinned to
+                # 34 while K=1's own folds were [51,60,96], mean 69 -- further
+                # from K=1 than the pre-this-fix flag-only logic happened to
+                # land in the 30,000-row case above, not closer).
+                # Also a real, SEPARATE effect at smaller scale: for an
+                # original population in roughly (10,000, 15,000] rows, the
+                # reference fit's own 'auto' decision (checked against the
+                # FULL row count) can disagree with what K=1's own folds
+                # (each ~2/3 that size) would decide. Every production
+                # population in this project (52,780-141,428 events/class) is
+                # far above both thresholds, where this decision-divergence
+                # cannot arise regardless (not separately tested; both the
+                # full count and each ~2/3 fold are unambiguously far above
+                # 10,000 at these scales). Properly closing either gap
+                # (deriving the reference decision from fold size;
+                # reconciling K=1's own fold-to-fold n_iter_ spread some
+                # other way) is deliberately left as a follow-up, not
+                # attempted here.
+                ref_params = dict(self.params)
+                ref_params['early_stopping'] = 'auto'
+                X_orig = np.vstack([Xs, Xb])
+                y_orig = np.r_[np.ones(len(Xs)), np.zeros(len(Xb))]
+                w_orig = np.r_[ws, wb]
+                ref_n_iter = HistGradientBoostingClassifier(**ref_params).fit(
+                    X_orig, y_orig, sample_weight=w_orig).n_iter_
+                params['early_stopping'] = False
+                params['max_iter'] = ref_n_iter
+            # HistGradientBoostingClassifier's own default min_samples_leaf (20)
+            # counts REPLICA rows, so a "leaf" of 20 replica rows is only 20/K
+            # real events once replication multiplies the row count -- a
+            # capacity increase stacking on noise injection's own smoothing
+            # effect. Scale by K to hold per-event leaf granularity constant.
+            # Applies whenever replication occurs, independent of whether the
+            # caller set early_stopping themselves above (a separate concern).
+            params.setdefault('min_samples_leaf', 20 * self.n_uncertainty_replicates)
+        base = HistGradientBoostingClassifier(**params)
         if self.calibrate:
             self.clf = CalibratedClassifierCV(base, method='isotonic', cv=3).fit(X, y, sample_weight=w)
         else:
             self.clf = base.fit(X, y, sample_weight=w)
 
-        sb = self.clf.predict_proba(Xb)[:, 1]
+        # Threshold-setting calibrates against self.score() -- the SAME quantity
+        # predict()/recovery_rate()/roc_curve() compare it to downstream. Using
+        # raw self.clf.predict_proba(Xb) here instead (an earlier revision's
+        # choice) would calibrate against a different quantity than the one the
+        # threshold is actually applied to whenever real uncertainty data makes
+        # score() average over replicas, silently drifting the realized FPR away
+        # from target_fpr (see docs/superpowers/specs/
+        # 2026-10-26-uncertainty-aware-noise-injection-design.md). score() already
+        # reduces to predict_proba exactly when no uncertainty data exists, so
+        # this is a true no-op in that case.
+        sb = self.score(background_events)
         self.threshold = float(weighted_quantile(sb, wb, q=1.0 - self.target_fpr))
-        self._store_kde_training_data(Xs, ws, Xb, wb)
+        self._store_kde_training_data(Xs, ws, Xb, wb, sigma_s, sigma_b)
         return self
 
-    def _store_kde_training_data(self, Xs, ws, Xb, wb):
-        """Retain the full (positive-weight) training events/weights +
+    def _store_kde_training_data(self, Xs, ws, Xb, wb, sigma_s, sigma_b):
+        """Retain the full (positive-weight) training events/weights/sigma +
         bandwidths for the local density-ratio blend in :meth:`probability`,
         and reset the per-pattern cache. ``ws``/``wb`` must already be the
         *balanced* weights computed earlier in :meth:`fit`, matching
-        ``p_tree``'s own balanced-training-prior convention.
+        ``p_tree``'s own balanced-training-prior convention. ``sigma_s``/
+        ``sigma_b`` are per-event measurement-uncertainty matrices, same row
+        order and column order as ``Xs``/``Xb`` (see
+        :func:`colour_feature_sigma_matrix`).
 
         ``kde_max_events`` subsampling does NOT happen here -- it happens
         lazily, per missing-data pattern, in :meth:`_kde_subset_for_pattern`.
@@ -378,11 +712,20 @@ class ColourClassifier:
         available. Filtering first, then capping per pattern, spends the
         budget only on rows that pattern can use. See docs/superpowers/
         specs/2026-10-26-kde-pattern-aware-subsampling-design.md.
+
+        Noise-injection replication for the KDE also does NOT happen here --
+        it happens lazily, per pattern, in :meth:`_kde_subset_for_pattern`,
+        AFTER that pattern's own kde_max_events cap, for the same reason: a
+        cap applied before replication would be spent on redundant copies of
+        the same few original events instead of genuinely diverse ones. See
+        docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md.
         """
         pos_s = ws > 0
         pos_b = wb > 0
         self._kde_Xs, self._kde_ws = Xs[pos_s], ws[pos_s]
+        self._kde_sigma_s = sigma_s[pos_s]
         self._kde_Xb, self._kde_wb = Xb[pos_b], wb[pos_b]
+        self._kde_sigma_b = sigma_b[pos_b]
         pooled_X = np.vstack([self._kde_Xs, self._kde_Xb])
         pooled_w = np.r_[self._kde_ws, self._kde_wb]
         self._kde_bandwidths = _scott_bandwidths(pooled_X, pooled_w)
@@ -393,9 +736,25 @@ class ColourClassifier:
 
         Monotonic with :meth:`probability`, so it gives the same ordering; use it
         when you only need to rank.
+
+        Each query event is noise-injection-replicated from its OWN ``*_err``
+        fields (if present) and the tree's predictions are averaged back to one
+        value per event -- symmetric treatment with how training data is
+        handled (see docs/superpowers/specs/
+        2026-10-26-uncertainty-aware-noise-injection-design.md). With no
+        ``*_err`` data, this is numerically identical to a direct
+        ``predict_proba`` call.
         """
         X, _ = colour_feature_matrix(events, self.keys, self.extra)
-        return self.clf.predict_proba(X)[:, 1]
+        sigma = colour_feature_sigma_matrix(events, self.keys, self.extra)
+        dims_all = np.arange(X.shape[1])
+        X_rep, _, event_id = _replicate_with_uncertainty(
+            X, sigma, np.ones(len(X)), dims_all, self.n_uncertainty_replicates,
+            monotonic_groups=self._resolve_monotonic_groups())
+        p_rep = self.clf.predict_proba(X_rep)[:, 1]
+        counts = np.bincount(event_id, minlength=len(X))
+        sums = np.bincount(event_id, weights=p_rep, minlength=len(X))
+        return sums / counts
 
     def probability(self, events, prior=None):
         """Posterior probability P(lensed SN Ia) for each event.
@@ -428,8 +787,18 @@ class ColourClassifier:
         Falls back to ``p_tree`` unchanged wherever the KDE side is
         degenerate (no nearby training data of either class, or no finite
         feature columns for that event).
+
+        Each query event is ALSO noise-injection-replicated from its own
+        ``*_err`` fields (if present), and the blended result is averaged
+        back over those replicas -- symmetric with how training data is
+        handled (see docs/superpowers/specs/
+        2026-10-26-uncertainty-aware-noise-injection-design.md). ``p_tree``
+        arrives already averaged over its own replicas (see
+        :meth:`score`); only the KDE-side evaluation is repeated here.
         """
         X, _ = colour_feature_matrix(events, self.keys, self.extra)
+        sigma = colour_feature_sigma_matrix(events, self.keys, self.extra)
+        monotonic_groups = self._resolve_monotonic_groups()
         out = np.array(p_tree, dtype=float, copy=True)
         for i in range(len(events)):
             x = X[i]
@@ -437,33 +806,43 @@ class ColourClassifier:
             dims = np.where(np.asarray(pattern))[0]
             if len(dims) == 0:
                 continue
-            Xs_p, ws_p, Xb_p, wb_p, ceil_sig, ceil_bg = self._kde_subset_for_pattern(pattern, dims)
-            p_kde, ess_sig, ess_bg = _local_density_ratio(
-                x, Xs_p, ws_p, Xb_p, wb_p, self._kde_bandwidths, dims, self.kde_min_ess,
-                ess_ceiling_sig=ceil_sig, ess_ceiling_bg=ceil_bg)
-            if p_kde is None:
-                continue
-            alpha = _blend_weight(ess_sig, ess_bg, self.ess_threshold, self.log_width)
-            out[i] = alpha * p_tree[i] + (1 - alpha) * p_kde
+            subset = self._kde_subset_for_pattern(pattern, dims)
+            x_rep, _, _ = _replicate_with_uncertainty(
+                x[np.newaxis, :], sigma[i][np.newaxis, :], np.array([1.0]),
+                dims, self.n_uncertainty_replicates, monotonic_groups=monotonic_groups)
+            blended_vals = []
+            for xr in x_rep:
+                p_kde, ess_sig, ess_bg = _local_density_ratio(
+                    xr, subset.Xs, subset.ws, subset.Xb, subset.wb, self._kde_bandwidths, dims,
+                    self.kde_min_ess, ess_ceiling_sig=subset.ess_ceiling_sig,
+                    ess_ceiling_bg=subset.ess_ceiling_bg, event_id_s=subset.event_id_s,
+                    event_id_b=subset.event_id_b, n_orig_s=subset.n_orig_s, n_orig_b=subset.n_orig_b)
+                if p_kde is None:
+                    continue
+                alpha = _blend_weight(ess_sig, ess_bg, self.ess_threshold, self.log_width)
+                blended_vals.append(alpha * p_tree[i] + (1 - alpha) * p_kde)
+            if blended_vals:
+                out[i] = float(np.mean(blended_vals))
         return out
 
     def _kde_subset_for_pattern(self, pattern, dims):
         """Training rows finite over ``dims``, weighted-subsampled to at
-        most ``kde_max_events`` (independently per class), plus each
-        resulting subset's ESS ceiling -- cached per ``pattern`` on this
-        instance (reset by :meth:`fit`).
+        most ``kde_max_events`` (independently per class), then
+        noise-injection-replicated from each surviving event's own
+        measurement uncertainty -- cached per ``pattern`` on this instance
+        (reset by :meth:`fit`) as a :class:`_KDEPatternSubset`.
 
         Subsampling happens HERE, after the finite-row filter, not in
         :meth:`_store_kde_training_data` -- so the ``kde_max_events`` budget
-        is spent only on rows this specific pattern can actually use. Each
-        distinct pattern gets its own independent cap, rather than all
-        patterns competing for one global cap drawn before anyone knows
-        which rows which pattern needs (see docs/superpowers/specs/
-        2026-10-26-kde-pattern-aware-subsampling-design.md for why this
-        matters on real data). The ceilings depend only on the resulting
-        subset's weights, never on the query point, so caching them here
-        (rather than recomputing in :func:`_local_density_ratio` on every
-        event that shares this pattern) avoids an O(n) pass per event.
+        is spent only on rows this specific pattern can actually use (see
+        docs/superpowers/specs/2026-10-26-kde-pattern-aware-subsampling-design.md).
+        Replication ALSO happens here, AFTER that cap -- replicating before
+        capping would spend the budget on redundant copies of a few original
+        events instead of genuinely diverse ones (see docs/superpowers/specs/
+        2026-10-26-uncertainty-aware-noise-injection-design.md). The ESS
+        ceilings are computed from the CAPPED, PRE-replication weights --
+        replicating a point into K pieces must not make its own class look
+        like it has K times more statistical support.
         """
         if pattern not in self._kde_pattern_cache:
             # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
@@ -471,13 +850,27 @@ class ColourClassifier:
 
             finite_s = np.all(np.isfinite(self._kde_Xs[:, dims]), axis=1)
             finite_b = np.all(np.isfinite(self._kde_Xb[:, dims]), axis=1)
-            Xs_p, ws_p = _weighted_subsample(
+            finite_s_idx = np.where(finite_s)[0]
+            finite_b_idx = np.where(finite_b)[0]
+            Xs_cap, ws_cap, chosen_s = _weighted_subsample(
                 self._kde_Xs[finite_s], self._kde_ws[finite_s], self.kde_max_events)
-            Xb_p, wb_p = _weighted_subsample(
+            Xb_cap, wb_cap, chosen_b = _weighted_subsample(
                 self._kde_Xb[finite_b], self._kde_wb[finite_b], self.kde_max_events)
-            self._kde_pattern_cache[pattern] = (
-                Xs_p, ws_p, Xb_p, wb_p,
-                effective_sample_size(ws_p), effective_sample_size(wb_p))
+            sigma_s_cap = self._kde_sigma_s[finite_s_idx[chosen_s]]
+            sigma_b_cap = self._kde_sigma_b[finite_b_idx[chosen_b]]
+
+            monotonic_groups = self._resolve_monotonic_groups()
+            Xs_rep, ws_rep, event_id_s = _replicate_with_uncertainty(
+                Xs_cap, sigma_s_cap, ws_cap, dims, self.n_uncertainty_replicates,
+                monotonic_groups=monotonic_groups)
+            Xb_rep, wb_rep, event_id_b = _replicate_with_uncertainty(
+                Xb_cap, sigma_b_cap, wb_cap, dims, self.n_uncertainty_replicates,
+                monotonic_groups=monotonic_groups)
+
+            self._kde_pattern_cache[pattern] = _KDEPatternSubset(
+                Xs_rep, ws_rep, Xb_rep, wb_rep,
+                effective_sample_size(ws_cap), effective_sample_size(wb_cap),
+                event_id_s, event_id_b, len(Xs_cap), len(Xb_cap))
         return self._kde_pattern_cache[pattern]
 
     def rank(self, events):

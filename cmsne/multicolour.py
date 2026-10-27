@@ -27,6 +27,28 @@ ADJ_COLOURS = [('lsstu', 'lsstg'), ('lsstg', 'lsstr'), ('lsstr', 'lssti'),
                ('lssti', 'lsstz'), ('lsstz', 'lssty')]
 
 
+def _nearest_detection_indices(lightcurve, epoch_obs, window=5.0):
+    """Index of the nearest detected observation in each LSST band within
+    ``window`` observer-days of ``epoch_obs``, or ``None`` where no
+    detection falls in that window. Shared by :func:`band_photometry` and
+    :func:`band_photometry_errors` so both pick exactly the same
+    observation per band."""
+    days = np.asarray(lightcurve.obs_days, dtype=float)
+    filt = np.asarray(lightcurve.obs_filters)
+    mag = np.asarray(lightcurve.obs_mag, dtype=float)
+    det = np.isfinite(mag)
+
+    idx = {}
+    for b in LSST_BANDS:
+        m = det & (filt == b[4:]) & (np.abs(days - epoch_obs) <= window)
+        if not np.any(m):
+            idx[b] = None
+            continue
+        candidates = np.where(m)[0]
+        idx[b] = candidates[np.argmin(np.abs(days[candidates] - epoch_obs))]
+    return idx
+
+
 def band_photometry(lightcurve, epoch_obs, window=5.0):
     """Nearest detected magnitude in each LSST band within ``window`` observer-days
     of ``epoch_obs``.
@@ -37,25 +59,33 @@ def band_photometry(lightcurve, epoch_obs, window=5.0):
 
     :return: dict ``{band: magnitude or nan}`` over all six LSST bands.
     """
-    days = np.asarray(lightcurve.obs_days, dtype=float)
-    filt = np.asarray(lightcurve.obs_filters)
     mag = np.asarray(lightcurve.obs_mag, dtype=float)
-    det = np.isfinite(mag)
+    idx = _nearest_detection_indices(lightcurve, epoch_obs, window)
+    return {b: (float(mag[i]) if i is not None else np.nan) for b, i in idx.items()}
 
-    out = {}
-    for b in LSST_BANDS:
-        m = det & (filt == b[4:]) & (np.abs(days - epoch_obs) <= window)
-        if not np.any(m):
-            out[b] = np.nan
-            continue
-        idx = np.where(m)[0]
-        nearest = idx[np.argmin(np.abs(days[idx] - epoch_obs))]
-        out[b] = float(mag[nearest])
-    return out
+
+def band_photometry_errors(lightcurve, epoch_obs, window=5.0):
+    """Magnitude error at the SAME nearest-detection index
+    :func:`band_photometry` would pick for the same arguments -- used to
+    propagate measurement uncertainty into colour features (see
+    docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+
+    :return: dict ``{band: magnitude error or nan}`` over all six LSST bands.
+    """
+    err = np.asarray(lightcurve.obs_mag_error, dtype=float)
+    idx = _nearest_detection_indices(lightcurve, epoch_obs, window)
+    return {b: (float(err[i]) if i is not None else np.nan) for b, i in idx.items()}
 
 
 def _colours(mags, suffix=''):
     return {f'{a[-1]}{b[-1]}{suffix}': (mags[a] - mags[b]) for a, b in ADJ_COLOURS}
+
+
+def _colours_errors(errs, suffix=''):
+    """Quadrature-sum colour error for every pair :func:`_colours` forms,
+    matching its key naming exactly (e.g. ``gr`` -> ``gr_err``,
+    ``gr_d`` -> ``gr_d_err``)."""
+    return {f'{a[-1]}{b[-1]}{suffix}_err': np.sqrt(errs[a] ** 2 + errs[b] ** 2) for a, b in ADJ_COLOURS}
 
 
 def first_detection_per_band(lightcurve, trigger):
@@ -103,8 +133,10 @@ def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
     trigger = float(days[det].min())
     m0 = band_photometry(lightcurve, trigger, window)
     m1 = band_photometry(lightcurve, trigger + evolution_days, window)
+    err0 = band_photometry_errors(lightcurve, trigger, window)
+    err1 = band_photometry_errors(lightcurve, trigger + evolution_days, window)
 
-    feat = {**_colours(m0), **_colours(m1, '_d')}
+    feat = {**_colours(m0), **_colours(m1, '_d'), **_colours_errors(err0), **_colours_errors(err1, '_d')}
     # Three brightness features, so the classifier's magnitude input can be chosen
     # and compared (see docs/methods_and_results.md):
     #   peakmag          -- brightest observed sample across all bands (nanmin);
@@ -112,10 +144,17 @@ def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
     #                       the noisiest/faintest-biased option;
     #   peakmag_fit      -- parabola-fitted light-curve peak in the best-sampled
     #                       band, which interpolates the true peak between visits.
+    # peakmag_fit has NO uncertainty companion -- it's a parabola-fit quantity, not
+    # a single observation, and proper error propagation there is out of scope (see
+    # docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
+    mag_err = np.asarray(lightcurve.obs_mag_error, dtype=float)
     det_idx = np.where(det)[0]
     first_idx = det_idx[np.argmin(days[det_idx])]
-    feat['peakmag'] = float(np.nanmin(mag[det]))
+    peak_idx = det_idx[np.argmin(mag[det_idx])]
+    feat['peakmag'] = float(mag[peak_idx])
+    feat['peakmag_err'] = float(mag_err[peak_idx])
     feat['peakmag_firstdet'] = float(mag[first_idx])
+    feat['peakmag_firstdet_err'] = float(mag_err[first_idx])
     filt = np.asarray(lightcurve.obs_filters)
     det_filters = filt[det]
     vals, counts = np.unique(det_filters, return_counts=True)
