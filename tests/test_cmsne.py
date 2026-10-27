@@ -2230,6 +2230,85 @@ check('self.threshold is computed from self.score(background_events) -- the SAME
       (_th_clf.threshold, _th_expected_threshold))
 
 
+
+print('\n=== band-matched CMD features: per-band keys, resolving, and classifiers ===')
+from cmsne.trajectory import matching_band_for_pair, resolve_magnitude_key, trajectory_band_magnitude_keys
+from cmsne.lsst import bands as LSST_BANDS
+
+# 1. matching_band_for_pair
+check('matching_band_for_pair pairs adjacent colours with the redder band',
+      matching_band_for_pair('gr') == 'r' and
+      matching_band_for_pair('ri') == 'i' and
+      matching_band_for_pair('iz') == 'z' and
+      matching_band_for_pair('zy') == 'y' and
+      matching_band_for_pair('ug') == 'g')
+
+# 2. trajectory_band_magnitude_keys
+_r_keys = trajectory_band_magnitude_keys('r')
+check('trajectory_band_magnitude_keys generates per-step peakmag_r keys',
+      _r_keys == ('peakmag_r_d0', 'peakmag_r_d3', 'peakmag_r_d14', 'peakmag_r_d30', 'peakmag_r_d60'))
+
+# 3. resolve_magnitude_key
+_k_m, _lbl_m = resolve_magnitude_key('gr', 0.0, mag_mode='matched')
+check('resolve_magnitude_key matched mode returns peakmag_{b}_d0', _k_m == 'peakmag_r_d0', _k_m)
+_k_s, _lbl_s = resolve_magnitude_key('gr', 14.0, mag_mode='snapshot')
+check('resolve_magnitude_key snapshot mode returns {b}_d14', _k_s == 'r_d14', _k_s)
+_k_p, _lbl_p = resolve_magnitude_key('gr', 14.0, mag_mode='peakmag')
+check('resolve_magnitude_key peakmag mode returns peakmag_d14', _k_p == 'peakmag_d14', _k_p)
+_k_custom, _ = resolve_magnitude_key('gr', 14.0, mag_mode='matched', mag_band='i')
+check('resolve_magnitude_key honours explicit mag_band override', _k_custom == 'peakmag_i_d14', _k_custom)
+_k_fb, _ = resolve_magnitude_key('gr', 0.0, mag_mode='matched', sample_event={'peakmag_d0': 20.0})
+check('resolve_magnitude_key falls back to peakmag_d0 when per-band key is absent in sample_event',
+      _k_fb == 'peakmag_d0', _k_fb)
+
+# 4. event_multicolour per-band features
+_f_bm = mcol.event_multicolour(_lc)
+check('event_multicolour includes per-band trigger and evolution magnitudes',
+      all(b[-1] in _f_bm and f"{b[-1]}_err" in _f_bm and f"{b[-1]}_d" in _f_bm and f"{b[-1]}_d_err" in _f_bm
+          for b in LSST_BANDS))
+check('event_multicolour per-band values match detected observations',
+      np.isclose(_f_bm['g'], 22.0) and np.isclose(_f_bm['g_err'], 0.05) and
+      np.isclose(_f_bm['r'], 21.5) and np.isclose(_f_bm['r_err'], 0.08) and
+      np.isnan(_f_bm['i']) and np.isnan(_f_bm['i_err']))
+
+# 5. event_trajectory per-band features and errors
+_ft_bm = traj.event_trajectory(_lct, grid=(0.0, 20.0), window=5.0)
+check('event_trajectory includes per-band snapshot and cumulative-best keys',
+      np.isclose(_ft_bm['g_d0'], 22.0) and np.isclose(_ft_bm['g_d0_err'], 0.05) and
+      np.isclose(_ft_bm['r_d0'], 21.5) and np.isclose(_ft_bm['r_d0_err'], 0.08) and
+      np.isclose(_ft_bm['peakmag_g_d0'], 22.0) and np.isclose(_ft_bm['peakmag_g_d20'], 20.0) and
+      np.isclose(_ft_bm['peakmag_g_d20_err'], 0.03) and
+      np.isclose(_ft_bm['peakmag_r_d0'], 21.5) and np.isclose(_ft_bm['peakmag_r_d20'], 21.0) and
+      np.isclose(_ft_bm['peakmag_r_d20_err'], 0.06))
+
+# 6. reveal_up_to masks future per-band keys
+_revealed_bm = traj.reveal_up_to(_ft_bm, 0, grid=(0.0, 20.0))
+check('reveal_up_to NaNs out future per-band values and errors beyond step k',
+      np.isnan(_revealed_bm['r_d20']) and np.isnan(_revealed_bm['r_d20_err']) and
+      np.isnan(_revealed_bm['peakmag_r_d20']) and np.isnan(_revealed_bm['peakmag_r_d20_err']) and
+      np.isfinite(_revealed_bm['r_d0']) and np.isfinite(_revealed_bm['peakmag_r_d0']))
+
+# 7. ColourClassifier accepts band-matched magnitude features
+_clf_r = ColourClassifier(keys=['gr'], magnitude_feature='r')
+check('ColourClassifier accepts single-band magnitude feature',
+      _clf_r.magnitude_feature == 'r' and _clf_r.extra == ('r',))
+_clf_pk_r = ColourClassifier(keys=['gr'], magnitude_feature='peakmag_r')
+check('ColourClassifier accepts band cumulative peakmag feature',
+      _clf_pk_r.magnitude_feature == 'peakmag_r' and _clf_pk_r.extra == ('peakmag_r',))
+
+# 8. evolving_contours supports matched magnitude_mode
+_sig_c_bm = [{'gr_d0': float(_rngc.normal(1.0, 0.3)), 'peakmag_r_d0': float(_rngc.normal(21.0, 1)),
+              'gr_d14': float(_rngc.normal(1.0, 0.3)), 'peakmag_r_d14': float(_rngc.normal(20.5, 1))}
+             for _ in range(200)]
+_bg_c_bm = [{'gr_d0': float(_rngc.normal(0.0, 0.3)), 'peakmag_r_d0': float(_rngc.normal(22.5, 1)),
+             'gr_d14': float(_rngc.normal(0.0, 0.3)), 'peakmag_r_d14': float(_rngc.normal(22.0, 1))}
+            for _ in range(400)]
+_surfaces_bm = ctr.evolving_contours(_sig_c_bm, _bg_c_bm, 'gr', grid=(0.0, 14.0), n=10, magnitude_mode='matched')
+check('evolving_contours with magnitude_mode="matched" returns valid probability surfaces',
+      set(_surfaces_bm) == {0.0, 14.0} and _surfaces_bm[0.0][2].shape == (10, 10) and
+      np.all((_surfaces_bm[0.0][2] >= 0) & (_surfaces_bm[0.0][2] <= 1)))
+
+
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)

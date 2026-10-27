@@ -16,6 +16,7 @@ methodology questions" #1).
 
 import numpy as np
 
+from .lsst import bands as LSST_BANDS
 from .multicolour import (MultiColourGenerator, band_photometry, band_photometry_errors,
                           _colours, _colours_errors, ADJ_COLOURS, event_multicolour)
 from .classifier import ColourClassifier
@@ -30,6 +31,58 @@ TRAJECTORY_GRID = (0.0, 3.0, 14.0, 30.0, 60.0)
 def _step_suffix(day):
     """Feature-key suffix for one grid step, e.g. ``3.0`` -> ``'_d3'``."""
     return f'_d{int(day)}'
+
+
+def matching_band_for_pair(pair_key):
+    """Companion magnitude band for a colour pair.
+
+    By standard astronomical CMD convention (e.g. Mane et al. 2024/2025,
+    Quimby et al. 2014, Arendse et al. 2025), a colour (c1 - c2) with
+    wavelength_1 < wavelength_2 is paired with the redder band c2
+    (e.g. 'gr' -> 'r', 'ri' -> 'i', 'iz' -> 'z', 'zy' -> 'y', 'ug' -> 'g').
+    """
+    return pair_key[-1]
+
+
+def trajectory_band_magnitude_keys(band, grid=TRAJECTORY_GRID):
+    """Per-step cumulative-best magnitude keys for a specific band,
+    e.g. 'r' -> ('peakmag_r_d0', 'peakmag_r_d3', ...)."""
+    b_name = band[-1]
+    return tuple(f'peakmag_{b_name}{_step_suffix(day)}' for day in grid)
+
+
+def resolve_magnitude_key(pair_key, day, mag_mode='matched', mag_band='auto', sample_event=None):
+    """Determine the magnitude feature key and human-readable axis label.
+
+    :param pair_key: colour pair stem, e.g. 'gr'.
+    :param day: grid step day (float or int).
+    :param mag_mode: 'matched' (default; per-band cumulative best),
+                     'snapshot' (per-band single-epoch magnitude),
+                     'peakmag' (global all-band cumulative best).
+    :param mag_band: 'auto' (use redder band of pair) or explicit band ('u','g','r','i','z','y').
+    :param sample_event: optional dict; if passed and candidate key is missing,
+                         falls back to 'peakmag{suffix}'.
+    :return: (key, label)
+    """
+    suffix = _step_suffix(day)
+    b = matching_band_for_pair(pair_key) if (mag_band is None or mag_band == 'auto') else mag_band[-1]
+
+    if mag_mode == 'matched':
+        candidate = f'peakmag_{b}{suffix}'
+        label = f'{b} peakmag (cumulative-best)'
+    elif mag_mode == 'snapshot':
+        candidate = f'{b}{suffix}'
+        label = f'{b} magnitude (snapshot)'
+    else:
+        candidate = f'peakmag{suffix}'
+        label = 'peakmag (brightest-observed)'
+
+    if sample_event is not None and candidate not in sample_event:
+        fallback = f'peakmag{suffix}'
+        if fallback in sample_event:
+            return fallback, 'peakmag (all-band fallback)'
+
+    return candidate, label
 
 
 def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
@@ -48,9 +101,15 @@ def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
     currently holds the cumulative-best magnitude (tracked explicitly, since
     the cumulative best can come from an earlier step's snapshot).
 
-    :return: dict with keys ``'{colour}{suffix}'``/``'{colour}{suffix}_err'``
-        (e.g. ``'gr_d14'``/``'gr_d14_err'``) and
-        ``'peakmag{suffix}'``/``'peakmag{suffix}_err'`` for every grid step,
+    Also records per-band snapshot magnitudes (``'{b}{suffix}'``) and per-band
+    cumulative-best magnitudes (``'peakmag_{b}{suffix}'``) along with their
+    matching measurement-uncertainty companions (``'*_err'``), allowing
+    band-matched CMD features (e.g. r vs g-r).
+
+    :return: dict with keys ``'{colour}{suffix}'``/``'{colour}{suffix}_err'``,
+        ``'peakmag{suffix}'``/``'peakmag{suffix}_err'``,
+        ``'{b}{suffix}'``/``'{b}{suffix}_err'``, and
+        ``'peakmag_{b}{suffix}'``/``'peakmag_{b}{suffix}_err'`` for every grid step,
         plus ``trigger_day``; or ``None`` if nothing was ever detected.
     """
     days = np.asarray(lightcurve.obs_days, dtype=float)
@@ -63,6 +122,8 @@ def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
     feat = {'trigger_day': trigger}
     cumulative_best = np.inf
     cumulative_best_err = np.nan
+    cumulative_best_band = {b[-1]: np.inf for b in LSST_BANDS}
+    cumulative_best_band_err = {b[-1]: np.nan for b in LSST_BANDS}
     for day in grid:
         suffix = _step_suffix(day)
         m = band_photometry(lightcurve, trigger + day, window)
@@ -78,6 +139,18 @@ def event_trajectory(lightcurve, grid=TRAJECTORY_GRID, window=5.0):
                 cumulative_best_err = err_m[step_best_band]
         feat[f'peakmag{suffix}'] = cumulative_best if np.isfinite(cumulative_best) else np.nan
         feat[f'peakmag{suffix}_err'] = cumulative_best_err
+
+        for b in LSST_BANDS:
+            b_name = b[-1]
+            feat[f'{b_name}{suffix}'] = m[b]
+            feat[f'{b_name}{suffix}_err'] = err_m[b]
+            if np.isfinite(m[b]) and m[b] < cumulative_best_band[b_name]:
+                cumulative_best_band[b_name] = m[b]
+                cumulative_best_band_err[b_name] = err_m[b]
+            feat[f'peakmag_{b_name}{suffix}'] = (
+                cumulative_best_band[b_name] if np.isfinite(cumulative_best_band[b_name]) else np.nan
+            )
+            feat[f'peakmag_{b_name}{suffix}_err'] = cumulative_best_band_err[b_name]
 
     return feat
 
@@ -112,6 +185,13 @@ def reveal_up_to(event, k, grid=TRAJECTORY_GRID):
             e[f'{key}_err'] = np.nan
         e[TRAJECTORY_MAGNITUDE_KEYS[step]] = np.nan
         e[f'{TRAJECTORY_MAGNITUDE_KEYS[step]}_err'] = np.nan
+        step_suffix = _step_suffix(grid[step])
+        for b in LSST_BANDS:
+            b_name = b[-1]
+            for key in (f'{b_name}{step_suffix}', f'peakmag_{b_name}{step_suffix}'):
+                if key in e:
+                    e[key] = np.nan
+                    e[f'{key}_err'] = np.nan
     return e
 
 
@@ -133,7 +213,7 @@ class TrajectoryGenerator(MultiColourGenerator):
 
 
 def event_dual_schema(lightcurve, evolution_days=15.0, grid=TRAJECTORY_GRID, window=5.0):
-    """Both the static two-point schema (:func:`cmsne.multicolour.event_multicolour`)
+    """Both the static two-point schema (:func:`cmsne.multicolour.event_multicolour`)\
     and the full N-point trajectory schema (:func:`event_trajectory`) for the
     same light curve.
 
@@ -202,9 +282,13 @@ class TrajectoryClassifier(ColourClassifier):
         # perturbing each step's column could otherwise produce a physically
         # impossible "cumulative best got fainter" feature vector (see
         # docs/superpowers/specs/2026-10-26-uncertainty-aware-noise-injection-design.md).
-        # ColourClassifier's own fit/score/KDE blend methods are inherited
-        # UNCHANGED -- only this one attribute differs from the base class.
-        self.monotonic_column_groups = [list(TRAJECTORY_MAGNITUDE_KEYS)]
+        # Group any per-band cumulative bests if present in extra too.
+        monotonic = [list(TRAJECTORY_MAGNITUDE_KEYS)]
+        for b in LSST_BANDS:
+            b_keys = [k for k in self.extra if k.startswith(f'peakmag_{b[-1]}_')]
+            if len(b_keys) > 1:
+                monotonic.append(b_keys)
+        self.monotonic_column_groups = monotonic
 
     def roc_curve_by_step(self, signal_events, background_events,
                           signal_weights=None, background_weights=None,

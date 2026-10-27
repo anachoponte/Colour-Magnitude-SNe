@@ -90,7 +90,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from cmsne.multicolour import ADJ_COLOURS
-from cmsne.trajectory import TRAJECTORY_GRID, _step_suffix
+from cmsne.trajectory import (TRAJECTORY_GRID, _step_suffix,
+                              matching_band_for_pair, resolve_magnitude_key)
 from cmsne.contours import posterior_surface, robust_range
 
 CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn2n',
@@ -116,16 +117,18 @@ def _binary_legend_handles():
 
 
 def shared_ranges(signal, background, signal_weights, background_weights,
-                  pair_key, grid=TRAJECTORY_GRID):
+                  pair_key, grid=TRAJECTORY_GRID, mag_mode='matched', mag_band='auto'):
     """Pooled, rate-weighted, outlier-robust colour/magnitude range across
     every grid step, for one shared axis range across all of a figure's
     panels (see :func:`cmsne.contours.robust_range`)."""
     colours, mags, weights = [], [], []
     pooled = signal + background
+    sample_event = pooled[0] if pooled else None
     pooled_weights = np.r_[signal_weights, background_weights]
     for day in grid:
         suffix = _step_suffix(day)
-        colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
+        colour_key = f'{pair_key}{suffix}'
+        magnitude_key, _ = resolve_magnitude_key(pair_key, day, mag_mode, mag_band, sample_event)
         colours.extend(e.get(colour_key, np.nan) for e in pooled)
         mags.extend(e.get(magnitude_key, np.nan) for e in pooled)
         weights.extend(pooled_weights)
@@ -139,14 +142,17 @@ def shared_ranges(signal, background, signal_weights, background_weights,
 
 
 def compute_surfaces(signal, background, signal_weights, background_weights,
-                     pair_key, colour_range, magnitude_range, grid=TRAJECTORY_GRID, n=200):
+                     pair_key, colour_range, magnitude_range, grid=TRAJECTORY_GRID, n=200,
+                     mag_mode='matched', mag_band='auto'):
     """Fit one posterior_surface per grid step and cache the (cg, mg, pg)
     grids, so every figure for this band pair reuses the same fit instead of
     re-fitting the classifier per figure."""
     surfaces = {}
+    sample_event = (signal[0] if signal else (background[0] if background else None))
     for day in grid:
         suffix = _step_suffix(day)
-        colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
+        colour_key = f'{pair_key}{suffix}'
+        magnitude_key, _ = resolve_magnitude_key(pair_key, day, mag_mode, mag_band, sample_event)
         cg, mg, pg, _ = posterior_surface(
             signal, background, colour_key, magnitude_key,
             colour_range=colour_range, magnitude_range=magnitude_range, n=n,
@@ -155,7 +161,8 @@ def compute_surfaces(signal, background, signal_weights, background_weights,
     return surfaces
 
 
-def plot_boundary_evolution(surfaces, pair_key, out_path, signal_label, grid=TRAJECTORY_GRID):
+def plot_boundary_evolution(surfaces, pair_key, out_path, signal_label, grid=TRAJECTORY_GRID,
+                            mag_label='peakmag'):
     fig, axes = plt.subplots(1, len(grid), figsize=(4 * len(grid), 4.2), sharex=True, sharey=True)
     mesh = None
     for ax, day in zip(axes, grid):
@@ -167,7 +174,7 @@ def plot_boundary_evolution(surfaces, pair_key, out_path, signal_label, grid=TRA
         mesh = ax.contourf(mg.T, cg.T, pg.T, levels=HEATMAP_LEVELS, cmap='viridis', vmin=0, vmax=1)
         ax.contour(mg.T, cg.T, pg.T, levels=[0.5], colors='white', linewidths=1.2)
         ax.set_title(f'+{day:.0f}d')
-        ax.set_xlabel('peakmag (brightest-observed)')
+        ax.set_xlabel(mag_label)
     axes[0].set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
     fig.suptitle(f'P({signal_label}) vs {pair_key[0]}-{pair_key[1]} colour -- evolution since trigger')
     fig.subplots_adjust(bottom=0.22)
@@ -220,7 +227,8 @@ def _corner_panel(fig, outer_spec):
 
 def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                            colour_range, magnitude_range, colors, signal_classes,
-                           emphasize_signal_edge=False, zorder=1, binary_colour=False):
+                           emphasize_signal_edge=False, zorder=1, binary_colour=False,
+                           mag_mode='matched', mag_band='auto', mag_label='peakmag'):
     """Draw every class's weight-rated scatter onto ax_main, plus weighted,
     density-normalised marginal histograms onto ax_top (magnitude) and
     ax_right (colour).
@@ -233,7 +241,9 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
     no visual cost.
     """
     suffix = _step_suffix(day)
-    colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
+    colour_key = f'{pair_key}{suffix}'
+    first_ev = next((pop[c][0] for c in CLASSES if pop[c]), None)
+    magnitude_key, _ = resolve_magnitude_key(pair_key, day, mag_mode, mag_band, first_ev)
     mag_bins = np.linspace(*magnitude_range, N_MARGINAL_BINS + 1)
     colour_bins = np.linspace(*colour_range, N_MARGINAL_BINS + 1)
     pooled = {True: {'mags': [], 'colours': [], 'weights': []},
@@ -290,7 +300,7 @@ def _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
 
     ax_main.set_xlim(*magnitude_range)
     ax_main.set_ylim(*colour_range)
-    ax_main.set_xlabel('peakmag')
+    ax_main.set_xlabel(mag_label)
     ax_top.set_title(f'+{day:.0f}d')
 
 
@@ -304,7 +314,8 @@ def _class_legend_handles(colors, signal_classes):
 
 def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitude_range,
                                  signal_classes, signal_label, grid=TRAJECTORY_GRID,
-                                 binary_colour=False):
+                                 binary_colour=False, mag_mode='matched', mag_band='auto',
+                                 mag_label='peakmag'):
     """Weight-rated corner-style companion to the boundary figure: for each
     grid step, a main colour-magnitude scatter (per-point alpha from each
     event's own rate weight, see _weight_alpha) plus weighted, density-
@@ -314,12 +325,12 @@ def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitud
     fig = plt.figure(figsize=(4.2 * len(grid), 5.2))
     outer = fig.add_gridspec(1, len(grid), wspace=0.35)
     colors = plt.cm.tab10(np.linspace(0, 1, len(CLASSES)))
-
     for col, day in enumerate(grid):
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                                colour_range, magnitude_range, colors, signal_classes,
-                               binary_colour=binary_colour)
+                               binary_colour=binary_colour, mag_mode=mag_mode,
+                               mag_band=mag_band, mag_label=mag_label)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
@@ -342,31 +353,17 @@ def plot_weighted_sources_corner(pop, pair_key, out_path, colour_range, magnitud
 
 def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                             colour_range, magnitude_range, colors, rng, signal_classes,
-                            n_resample=N_RESAMPLE, binary_colour=False):
+                            n_resample=N_RESAMPLE, binary_colour=False,
+                            mag_mode='matched', mag_band='auto', mag_label='peakmag'):
     """Draw each class as a weighted bootstrap resample rather than every raw
     event at weight-scaled alpha: `n_resample` points are drawn with
     replacement per class, with probability proportional to each event's own
     rate weight, so point *density* (not opacity) encodes the class's
-    weighted distribution. Resampling is done per class independently (not
-    pooled across classes), matching _draw_weighted_sources' per-class alpha
-    scale -- a signal class's total rate can be many orders of magnitude
-    below the background classes', so pooling globally would make it vanish
-    from the plot entirely instead of showing where its (rare but real)
-    weighted mass sits.
-
-    In binary_colour mode the marginal histograms ARE pooled, one line per
-    group (see _draw_weighted_sources) -- but each class still contributes
-    a fixed n_resample points regardless of its true relative rate (only
-    the within-class resample probabilities use the real weights), so this
-    pooled line is an equal-representation mixture across the classes in
-    its group, NOT rate-weighted between them the way
-    _draw_weighted_sources' pooled histogram is. The two binary figures
-    answer different questions: this one shows the shape each class
-    contributes in equal measure, that one shows the true rate-weighted
-    mix.
-    """
+    weighted distribution."""
     suffix = _step_suffix(day)
-    colour_key, magnitude_key = f'{pair_key}{suffix}', f'peakmag{suffix}'
+    colour_key = f'{pair_key}{suffix}'
+    first_ev = next((pop[c][0] for c in CLASSES if pop[c]), None)
+    magnitude_key, _ = resolve_magnitude_key(pair_key, day, mag_mode, mag_band, first_ev)
     mag_bins = np.linspace(*magnitude_range, N_MARGINAL_BINS + 1)
     colour_bins = np.linspace(*colour_range, N_MARGINAL_BINS + 1)
     pooled = {True: {'mags': [], 'colours': []}, False: {'mags': [], 'colours': []}}
@@ -380,8 +377,6 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
         colours, mags, weights = colours[finite], mags[finite], weights[finite]
         wsum = weights.sum()
         if colours.size == 0 or wsum <= 0:
-            # No finite events, or every one has zero weight -- nothing in
-            # this slice is realised, so there is nothing to resample.
             continue
         idx = rng.choice(colours.size, size=n_resample, replace=True, p=weights / wsum)
         rcolours, rmags = colours[idx], mags[idx]
@@ -415,20 +410,17 @@ def _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
 
     ax_main.set_xlim(*magnitude_range)
     ax_main.set_ylim(*colour_range)
-    ax_main.set_xlabel('peakmag')
+    ax_main.set_xlabel(mag_label)
     ax_top.set_title(f'+{day:.0f}d')
 
 
 def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitude_range,
                                   signal_classes, signal_label, grid=TRAJECTORY_GRID,
-                                  n_resample=N_RESAMPLE, seed=RESAMPLE_SEED, binary_colour=False):
+                                  n_resample=N_RESAMPLE, seed=RESAMPLE_SEED, binary_colour=False,
+                                  mag_mode='matched', mag_band='auto', mag_label='peakmag'):
     """Corner-style companion like plot_weighted_sources_corner, but drawing a
     weighted resample of each class (see _draw_resampled_sources) instead of
-    every raw event at weight-scaled alpha -- point density directly
-    reflects each class's weighted distribution rather than relying on
-    opacity, which is easy to misjudge across >10 orders of magnitude of
-    weight and prone to overplotting from the sheer number of raw events.
-    """
+    every raw event at weight-scaled alpha."""
     fig = plt.figure(figsize=(4.2 * len(grid), 5.2))
     outer = fig.add_gridspec(1, len(grid), wspace=0.35)
     colors = plt.cm.tab10(np.linspace(0, 1, len(CLASSES)))
@@ -438,7 +430,8 @@ def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitu
         ax_main, ax_top, ax_right = _corner_panel(fig, outer[0, col])
         _draw_resampled_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                                 colour_range, magnitude_range, colors, rng, signal_classes,
-                                n_resample=n_resample, binary_colour=binary_colour)
+                                n_resample=n_resample, binary_colour=binary_colour,
+                                mag_mode=mag_mode, mag_band=mag_band, mag_label=mag_label)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
@@ -460,13 +453,12 @@ def plot_resampled_sources_corner(pop, pair_key, out_path, colour_range, magnitu
 
 
 def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, magnitude_range,
-                             signal_classes, signal_label, grid=TRAJECTORY_GRID, binary_colour=False):
+                             signal_classes, signal_label, grid=TRAJECTORY_GRID, binary_colour=False,
+                             mag_mode='matched', mag_band='auto', mag_label='peakmag'):
     """Same corner layout as plot_weighted_sources_corner, with the already-
     fitted P(signal) posterior surface (from compute_surfaces -- not
     re-fitted here) underlaid in each main panel beneath the weighted
-    scatter, so the decision surface and the weighted sources it was fitted
-    from read together in one panel.
-    """
+    scatter."""
     fig = plt.figure(figsize=(4.2 * len(grid), 5.2))
     outer = fig.add_gridspec(1, len(grid), wspace=0.35)
     colors = plt.cm.tab10(np.linspace(0, 1, len(CLASSES)))
@@ -479,7 +471,8 @@ def plot_corner_with_heatmap(pop, surfaces, pair_key, out_path, colour_range, ma
         ax_main.contour(mg.T, cg.T, pg.T, levels=[0.5], colors='white', linewidths=1.0, zorder=1)
         _draw_weighted_sources(ax_main, ax_top, ax_right, pop, pair_key, day,
                                colour_range, magnitude_range, colors, signal_classes,
-                               emphasize_signal_edge=True, zorder=2, binary_colour=binary_colour)
+                               emphasize_signal_edge=True, zorder=2, binary_colour=binary_colour,
+                               mag_mode=mag_mode, mag_band=mag_band, mag_label=mag_label)
         if col == 0:
             ax_main.set_ylabel(f'{pair_key[0]}-{pair_key[1]}')
         else:
@@ -509,6 +502,14 @@ def main():
                     help="signal definition: 'lensed_ia' (default, lensed_Ia only -- "
                          "unchanged filenames) or 'all_lensed' (every lensed_* class; "
                          "output filenames get an _alllensed suffix)")
+    ap.add_argument('--mag-mode', choices=['matched', 'peakmag', 'snapshot'], default='matched',
+                    help="magnitude feature mode: 'matched' (default, companion band-matched "
+                         "cumulative best, e.g. peakmag_r for gr), 'peakmag' (global all-band peakmag), "
+                         "or 'snapshot' (band snapshot at each step)")
+    ap.add_argument('--mag-band', default='auto',
+                    help="override companion magnitude band (default: 'auto', redder band of pair)")
+    ap.add_argument('--pairs', default=','.join(PAIR_KEYS),
+                    help=f"comma-separated colour pairs to process (default: '{','.join(PAIR_KEYS)}')")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -528,37 +529,47 @@ def main():
     background = [e for c in CLASSES if c not in signal_classes for e in pop[c]]
     signal_weights = np.array([e['weight'] for e in signal])
     background_weights = np.array([e['weight'] for e in background])
-    print(f'signal ({"+".join(signal_classes)}): {len(signal)}, background: {len(background)}')
+    print(f'signal ({" + ".join(signal_classes)}): {len(signal)}, background: {len(background)}')
 
-    for pair_key in PAIR_KEYS:
+    selected_pairs = [p.strip() for p in args.pairs.split(',') if p.strip()]
+    for pair_key in selected_pairs:
+        sample_event = signal[0] if signal else (background[0] if background else None)
+        _, mag_label = resolve_magnitude_key(pair_key, 0.0, args.mag_mode, args.mag_band, sample_event)
+
         boundary_path = os.path.join(args.out_dir, f'boundary_{pair_key}{file_suffix}.png')
         sources_path = os.path.join(args.out_dir, f'boundary_{pair_key}_sources{file_suffix}.png')
         corner_path = os.path.join(args.out_dir, f'boundary_{pair_key}_corner{file_suffix}.png')
         resampled_path = os.path.join(args.out_dir, f'boundary_{pair_key}_resampled{file_suffix}.png')
-        print(f'fitting {pair_key} ({len(TRAJECTORY_GRID)} grid steps)...')
+        print(f'fitting {pair_key} ({len(TRAJECTORY_GRID)} grid steps, {mag_label})...')
         try:
             colour_range, magnitude_range = shared_ranges(
-                signal, background, signal_weights, background_weights, pair_key)
+                signal, background, signal_weights, background_weights, pair_key,
+                mag_mode=args.mag_mode, mag_band=args.mag_band)
         except ValueError as exc:
             print(f'skipping {pair_key}: {exc}')
             continue
 
         surfaces = compute_surfaces(signal, background, signal_weights, background_weights,
-                                    pair_key, colour_range, magnitude_range, n=args.n)
+                                    pair_key, colour_range, magnitude_range, n=args.n,
+                                    mag_mode=args.mag_mode, mag_band=args.mag_band)
 
-        plot_boundary_evolution(surfaces, pair_key, boundary_path, signal_label)
+        plot_boundary_evolution(surfaces, pair_key, boundary_path, signal_label,
+                                mag_label=mag_label)
         print(f'wrote {boundary_path}')
 
         plot_weighted_sources_corner(pop, pair_key, sources_path, colour_range, magnitude_range,
-                                     signal_classes, signal_label)
+                                     signal_classes, signal_label,
+                                     mag_mode=args.mag_mode, mag_band=args.mag_band, mag_label=mag_label)
         print(f'wrote {sources_path}')
 
         plot_corner_with_heatmap(pop, surfaces, pair_key, corner_path, colour_range, magnitude_range,
-                                 signal_classes, signal_label)
+                                 signal_classes, signal_label,
+                                 mag_mode=args.mag_mode, mag_band=args.mag_band, mag_label=mag_label)
         print(f'wrote {corner_path}')
 
         plot_resampled_sources_corner(pop, pair_key, resampled_path, colour_range, magnitude_range,
-                                      signal_classes, signal_label)
+                                      signal_classes, signal_label,
+                                      mag_mode=args.mag_mode, mag_band=args.mag_band, mag_label=mag_label)
         print(f'wrote {resampled_path}')
 
         if args.target == 'all_lensed':
@@ -567,15 +578,18 @@ def main():
             resampled_bin_path = os.path.join(args.out_dir, f'boundary_{pair_key}_resampled{file_suffix}_binary.png')
 
             plot_weighted_sources_corner(pop, pair_key, sources_bin_path, colour_range, magnitude_range,
-                                         signal_classes, signal_label, binary_colour=True)
+                                         signal_classes, signal_label, binary_colour=True,
+                                         mag_mode=args.mag_mode, mag_band=args.mag_band, mag_label=mag_label)
             print(f'wrote {sources_bin_path}')
 
             plot_corner_with_heatmap(pop, surfaces, pair_key, corner_bin_path, colour_range, magnitude_range,
-                                     signal_classes, signal_label, binary_colour=True)
+                                     signal_classes, signal_label, binary_colour=True,
+                                     mag_mode=args.mag_mode, mag_band=args.mag_band, mag_label=mag_label)
             print(f'wrote {corner_bin_path}')
 
             plot_resampled_sources_corner(pop, pair_key, resampled_bin_path, colour_range, magnitude_range,
-                                          signal_classes, signal_label, binary_colour=True)
+                                          signal_classes, signal_label, binary_colour=True,
+                                          mag_mode=args.mag_mode, mag_band=args.mag_band, mag_label=mag_label)
             print(f'wrote {resampled_bin_path}')
 
 

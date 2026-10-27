@@ -83,7 +83,7 @@ def _colours(mags, suffix=''):
 
 def _colours_errors(errs, suffix=''):
     """Quadrature-sum colour error for every pair :func:`_colours` forms,
-    matching its key naming exactly (e.g. ``gr`` -> ``gr_err``,
+    matching its key naming exactly (e.g. ``gr`` -> ``gr_err``,\
     ``gr_d`` -> ``gr_d_err``)."""
     return {f'{a[-1]}{b[-1]}{suffix}_err': np.sqrt(errs[a] ** 2 + errs[b] ** 2) for a, b in ADJ_COLOURS}
 
@@ -120,9 +120,9 @@ def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
     either band was not observed within ``window`` of that epoch.
 
     :return: dict of colours (``gr``, ``ri``, ...), their later-epoch counterparts
-        (``gr_d``, ...), the brightest observed magnitude ``peakmag``, the trigger
-        epoch, and how many bands were seen at trigger (``n_bands``); or ``None`` if
-        nothing was detected.
+        (``gr_d``, ...), individual band magnitudes and errors, the brightest
+        observed magnitude ``peakmag``, the trigger epoch, and how many bands
+        were seen at trigger (``n_bands``); or ``None`` if nothing was detected.
     """
     days = np.asarray(lightcurve.obs_days, dtype=float)
     mag = np.asarray(lightcurve.obs_mag, dtype=float)
@@ -137,6 +137,15 @@ def event_multicolour(lightcurve, evolution_days=15.0, window=5.0):
     err1 = band_photometry_errors(lightcurve, trigger + evolution_days, window)
 
     feat = {**_colours(m0), **_colours(m1, '_d'), **_colours_errors(err0), **_colours_errors(err1, '_d')}
+
+    # Per-band trigger and evolution magnitudes and errors for band-matched CMD features
+    for b in LSST_BANDS:
+        b_name = b[-1]
+        feat[b_name] = m0[b]
+        feat[f'{b_name}_err'] = err0[b]
+        feat[f'{b_name}_d'] = m1[b]
+        feat[f'{b_name}_d_err'] = err1[b]
+
     # Three brightness features, so the classifier's magnitude input can be chosen
     # and compared (see docs/methods_and_results.md):
     #   peakmag          -- brightest observed sample across all bands (nanmin);
@@ -228,8 +237,7 @@ class MultiColourGenerator:
         an N-point trajectory instead of the two-point (trigger,
         trigger+evolution_days) vector. Kept as a method (not a free function
         call) so subclasses can swap the extraction logic without duplicating
-        :meth:`generate_one`'s OpSim/model plumbing.
-        """
+        :meth:`generate_one`'s OpSim/model plumbing."""
         return event_multicolour(lc, evolution_days, window)
 
     def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
@@ -268,8 +276,7 @@ def rate_weight(kind_source, z, magnification, source=None):
     core-collapse kinds, pass the sncosmo ``source`` so the weight is scaled by that
     sub-type's volumetric fraction (:data:`cmsne.lsst.CC_FRACTIONS`) and the overall
     core-collapse:Ia rate ratio (:data:`cmsne.lsst.CC_TO_IA_RATE`) — giving a
-    realistic contaminant composition rather than equal-per-template.
-    """
+    realistic contaminant composition rather than equal-per-template."""
     if kind_source == 'uIa':
         return ul_weight(z)
     if kind_source == 'sig':

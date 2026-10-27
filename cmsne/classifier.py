@@ -24,6 +24,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import roc_curve as _sklearn_roc_curve
 
 from .colour_magnitude import weighted_quantile
+from .lsst import bands as LSST_BANDS
 
 # Adjacent ugrizy colours, matching cmsne.multicolour's feature names.
 COLOUR_KEYS = ['ug', 'gr', 'ri', 'iz', 'zy']
@@ -37,6 +38,8 @@ COLOUR_KEYS = ['ug', 'gr', 'ri', 'iz', 'zy']
 # magnitude), so it is the explicit default magnitude feature.
 MAGNITUDE_FEATURES = ('peakmag', 'peakmag_fit', 'peakmag_firstdet')
 DEFAULT_MAGNITUDE_FEATURE = 'peakmag'   # brightest-observed sample across all bands
+BAND_MAGNITUDE_FEATURES = tuple(f'peakmag_{b[-1]}' for b in LSST_BANDS) + tuple(b[-1] for b in LSST_BANDS)
+ALLOWED_MAGNITUDE_FEATURES = MAGNITUDE_FEATURES + BAND_MAGNITUDE_FEATURES
 
 # Local density-ratio blend defaults (see docs/superpowers/specs/
 # 2026-10-25-local-density-posterior-blend-design.md). These are provisional
@@ -513,7 +516,11 @@ class ColourClassifier:
                  n_uncertainty_replicates=DEFAULT_N_UNCERTAINTY_REPLICATES, **hgb):
         self.keys = list(keys)
         if include_peakmag and magnitude_feature:
-            if magnitude_feature not in MAGNITUDE_FEATURES:
+            valid_mag = (
+                magnitude_feature in ALLOWED_MAGNITUDE_FEATURES
+                or magnitude_feature.startswith(('peakmag_', 'mag_'))
+            )
+            if not valid_mag:
                 raise ValueError("magnitude_feature must be one of %r, got %r"
                                  % (MAGNITUDE_FEATURES, magnitude_feature))
             self.magnitude_feature = magnitude_feature

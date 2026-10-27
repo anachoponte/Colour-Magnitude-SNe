@@ -95,20 +95,33 @@ def posterior_surface(signal_events, background_events, colour_key, magnitude_ke
 
 def evolving_contours(signal_trajectories, background_trajectories, pair_key,
                       grid=TRAJECTORY_GRID, n=200,
-                      signal_weights=None, background_weights=None):
+                      signal_weights=None, background_weights=None,
+                      magnitude_mode='peakmag', mag_band='auto'):
     """:func:`posterior_surface` at every Δt-since-trigger grid step.
 
     :param pair_key: adjacent-colour key stem, e.g. ``'gr'`` for g-r.
     :param signal_weights, background_weights: forwarded to every
         :func:`posterior_surface` call (see its docstring).
+    :param magnitude_mode: 'peakmag' (default, cross-band cumulative best: ``peakmag{suffix}``);
+        'matched' (band-matched cumulative best: ``peakmag_{b}{suffix}`` where b is the
+        redder filter in pair_key, e.g. 'r' for 'gr');
+        'snapshot' (band-matched snapshot magnitude: ``{b}{suffix}``).
+    :param mag_band: 'auto' (use redder band of pair) or explicit band ('u','g','r','i','z','y').
     :return: dict ``{day: (colour_grid, magnitude_grid, probability_grid, classifier)}``
         keyed by each ``day`` in ``grid``.
     """
     surfaces = {}
+    b = pair_key[-1] if (mag_band is None or mag_band == 'auto') else mag_band[-1]
     for day in grid:
         suffix = _step_suffix(day)
+        if magnitude_mode == 'matched':
+            magnitude_key = f'peakmag_{b}{suffix}'
+        elif magnitude_mode == 'snapshot':
+            magnitude_key = f'{b}{suffix}'
+        else:
+            magnitude_key = f'peakmag{suffix}'
         surfaces[day] = posterior_surface(
             signal_trajectories, background_trajectories,
-            colour_key=f'{pair_key}{suffix}', magnitude_key=f'peakmag{suffix}', n=n,
+            colour_key=f'{pair_key}{suffix}', magnitude_key=magnitude_key, n=n,
             signal_weights=signal_weights, background_weights=background_weights)
     return surfaces
