@@ -51,7 +51,11 @@ def run_class(cls, n, seed, pilot_frac=0.85):
     gen = TrajectoryGenerator(cls['source'])
     pop, boost_info = generate_with_boosting(
         gen, n, cls['kind'], z_range, cls['am'], cls['sd'],
-        rate_weight_fn=lambda z, mu: rate_weight(cls['rate'], z, mu, source=cls['source']),
+        rate_weight_fn=lambda z, mu: rate_weight(
+            cls['rate'], z, mu, source=cls['source'],
+            z_range=z_range, magnification_range=(2.0, 50.0),
+            n_attempted=n
+        ),
         pilot_frac=pilot_frac)
     for e in pop:
         e['class'] = cls['name']
@@ -95,7 +99,9 @@ def main():
             pickle.dump({'class': cls['name'], 'rate': cls['rate'], 'z_range': zr,
                          'n_attempted': args.n, 'events': pop, 'boost_info': boost_info},
                         f, protocol=pickle.HIGHEST_PROTOCOL)
+        tot_rate = float(np.sum([e['weight'] for e in pop])) if pop else 0.0
         row = {'class': cls['name'], 'kept': len(pop), 'n_attempted': args.n,
+               'annual_detection_rate': tot_rate,
                'minutes': round((time.time() - t0) / 60, 2)}
         json.dump(row, open(os.path.join(out, f'{cls["name"]}.summary.json'), 'w'), indent=2)
         print(f'  kept {row["kept"]}/{args.n}  [{row["minutes"]:.1f} min]', flush=True)

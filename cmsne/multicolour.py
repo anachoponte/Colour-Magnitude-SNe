@@ -268,22 +268,22 @@ class MultiColourGenerator:
         return pop
 
 
-def rate_weight(kind_source, z, magnification, source=None):
+def rate_weight(kind_source, z, magnification, source=None,
+                z_range=None, magnification_range=None, n_attempted=None):
     """Per-event rate weight, matching the population it belongs to.
 
     ``kind_source`` is one of ``'sig'`` (lensed Ia), ``'uIa'`` (unlensed Ia),
     ``'uCC'`` (unlensed core-collapse), ``'lCC'`` (lensed core-collapse). For the
     core-collapse kinds, pass the sncosmo ``source`` so the weight is scaled by that
-    sub-type's volumetric fraction (:data:`cmsne.lsst.CC_FRACTIONS`) and the overall
-    core-collapse:Ia rate ratio (:data:`cmsne.lsst.CC_TO_IA_RATE`) — giving a
-    realistic contaminant composition rather than equal-per-template."""
-    if kind_source == 'uIa':
-        return ul_weight(z)
-    if kind_source == 'sig':
-        return l_weight(z, magnification)
-    frac = CC_FRACTIONS.get(source, 1.0) * CC_TO_IA_RATE
-    if kind_source == 'uCC':
-        return cc_ul_weight(z) * frac
-    if kind_source == 'lCC':
-        return cc_l_weight(z, magnification) * frac
-    raise ValueError(kind_source)
+    sub-type's volumetric fraction (:data:`cmsne.lsst.CC_FRACTIONS`).
+
+    If ``z_range`` and ``n_attempted`` are provided, returns the exact Monte Carlo
+    weight contributing directly to the annual detection rate [events/year] in LSST WFD:
+        w_i = (V_sample / N_attempted) * differential_rate_density
+    """
+    from .rates import absolute_rate_weight
+    return absolute_rate_weight(
+        kind_source, z, magnification=magnification, source=source,
+        z_range=z_range, magnification_range=magnification_range,
+        n_attempted=n_attempted
+    )

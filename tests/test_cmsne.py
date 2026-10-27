@@ -159,8 +159,8 @@ z_t, mu_t = 0.5, 10.0
 lw = cm.l_weight(z_t, mu_t)
 uw = cm.ul_weight(z_t)
 d_pc = (z_t * cu.redshift).to(u.pc, cu.redshift_distance(Planck18, kind='comoving')).value
-expect = uw * 0.5 * ((d_pc / 31e9) ** 3) * mu_t ** -2
-check('l_weight uses the 31 Gpc (=31e9 pc) scale', np.isclose(lw, expect, rtol=1e-12),
+expect = uw * ((d_pc / 31e9) ** 3) * (mu_t ** -3)
+check('l_weight uses the 31 Gpc (=31e9 pc) scale and mu^-3 optical depth', np.isclose(lw, expect, rtol=1e-12),
       (lw, expect))
 # the pre-fix code divided by 31 instead of 31e9 -> 1e27 too large
 check('l_weight is not the /31 variant', not np.isclose(lw, expect * 1e27, rtol=1e-6))
@@ -550,8 +550,8 @@ lw_cc = cm.cc_l_weight(0.5, 10.0)
 import astropy.units as _u, astropy.cosmology.units as _cu
 from astropy.cosmology import Planck18 as _P18
 _d = (0.5 * _cu.redshift).to(_u.pc, _cu.redshift_distance(_P18, kind='comoving')).value
-check('cc_l_weight uses the 31 Gpc scale',
-      np.isclose(lw_cc, cm.cc_ul_weight(0.5) * 0.5 * (_d / 31e9) ** 3 * 10.0 ** -2, rtol=1e-12))
+check('cc_l_weight uses the 31 Gpc scale and mu^-3 optical depth',
+      np.isclose(lw_cc, cm.cc_ul_weight(0.5) * ((_d / 31e9) ** 3) * (10.0 ** -3), rtol=1e-12))
 
 from cmsne.sn_rates import cc_rate_grid, rate_grid, cosmic_sfr_density
 z_cc, n_cc = cc_rate_grid()
@@ -839,7 +839,7 @@ check('common CC (II-P) weighted above rare (II-L)',
       rate_weight('uCC', 0.3, 1.0, 'nugent-sn2p') > rate_weight('uCC', 0.3, 1.0, 'nugent-sn2l'))
 check('fraction scales the CC weight',
       np.isclose(rate_weight('uCC', 0.3, 1.0, 'nugent-sn2p'),
-                 cm.cc_ul_weight(0.3) * CC_FRACTIONS['nugent-sn2p'] * CC_TO_IA_RATE))
+                 cm.cc_ul_weight(0.3) * CC_FRACTIONS['nugent-sn2p']))
 check('Ia weight ignores source arg',
       rate_weight('uIa', 0.3, 1.0, 'nugent-sn2p') == rate_weight('uIa', 0.3, 1.0))
 
@@ -2312,3 +2312,51 @@ check('evolving_contours with magnitude_mode="matched" returns valid probability
 print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
+
+print('\n=== absolute rates framework (LTT adaptation) ===')
+from cmsne.rates import (
+    MadauDickinsonSFRD, CustomRateDistribution, LensingOpticalDepth,
+    RateCalculator, DetectionMatrix, check_images_resolved,
+    sn_ia_rate_distribution, sn_cc_rate_distribution,
+    sn_ia_rate_calculator, sn_cc_rate_calculator,
+    absolute_rate_weight, LSST_SURVEY_AREA_DEG2, LSST_SURVEY_SOLID_ANGLE
+)
+
+# Test SFRD
+sfrd = MadauDickinsonSFRD(local_rate=2.4e-5, alpha=2.7, beta=2.9, z_pivot=1.9)
+check('MadauDickinsonSFRD local rate matches R0', np.isclose(sfrd.rate_density(0.0), 2.4e-5))
+check('MadauDickinsonSFRD rate increases towards peak z', sfrd.rate_density(1.5) > sfrd.rate_density(0.0))
+
+# Test Optical depth
+check('LensingOpticalDepth dtau_dmu_dz scales as mu^-3',
+      np.isclose(LensingOpticalDepth.dtau_dmu_dz(1.0, 10.0) / LensingOpticalDepth.dtau_dmu_dz(1.0, 20.0), 8.0))
+tau_1 = LensingOpticalDepth.tau(1.0, mu_min=2.0, mu_max=50.0)
+check('LensingOpticalDepth.tau is finite and positive', np.isfinite(tau_1) and tau_1 > 0, tau_1)
+
+# Test RateCalculator
+calc_ia = sn_ia_rate_calculator()
+calc_cc = sn_cc_rate_calculator()
+n_occ_ia = calc_ia.sources_in_redshift_bin(0.01, 1.5)
+n_occ_cc = calc_cc.sources_in_redshift_bin(0.01, 1.5)
+check('expected occurring SN Ia in LSST footprint ~ 1e7/yr', 5e6 < n_occ_ia < 2e7, round(n_occ_ia, 1))
+check('expected occurring CC in LSST footprint ~ 3e7/yr', 1e7 < n_occ_cc < 5e7, round(n_occ_cc, 1))
+
+# Test absolute_rate_weight
+w_bare_ia = absolute_rate_weight('uIa', 0.5)
+w_mc_ia = absolute_rate_weight('uIa', 0.5, z_range=(0.0, 1.5), n_attempted=100000)
+check('absolute_rate_weight bare is source_rate_density',
+      np.isclose(w_bare_ia, calc_ia.source_rate_density(0.5)))
+check('absolute_rate_weight MC scales by delta_z / N',
+      np.isclose(w_mc_ia, w_bare_ia * 1.5 / 100000))
+
+# Lensed Ia weight
+w_mc_sig = absolute_rate_weight('sig', 0.5, magnification=10.0,
+                                z_range=(0.0, 1.5), magnification_range=(2.0, 50.0),
+                                n_attempted=100000)
+expected_sig = calc_ia.source_rate_density(0.5) * LensingOpticalDepth.dtau_dmu_dz(0.5, 10.0) * (1.5 * 48.0 / 100000)
+check('absolute_rate_weight MC lensed scales by delta_z * delta_mu / N',
+      np.isclose(w_mc_sig, expected_sig))
+
+# Check resolution helper
+check('check_images_resolved respects seeing',
+      check_images_resolved(1.2, 0.7) and not check_images_resolved(0.5, 0.7))

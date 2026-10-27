@@ -22,7 +22,7 @@ import astropy.cosmology.units as cu
 from astropy.cosmology import Planck18, WMAP9
 
 from .lsst import mask
-from .sn_rates import rate_grid, cc_rate_grid
+from .rates import sn_ia_rate_calculator, sn_cc_rate_calculator, LensingOpticalDepth
 
 
 def obs_to_mags(day_band_1, day_band_2, mag_band_1, mag_band_2,
@@ -118,60 +118,33 @@ def individual_observations(band, lightcurve_obj, redshift):
 
 
 def ul_weight(redshift_val):
-    """Intrinsic (unlensed) SN Ia rate weight at ``redshift_val``."""
-    redshift, nSN1A = rate_grid()
-    index = np.argmin(np.abs(redshift - redshift_val))
-    return nSN1A[index]
+    """Intrinsic (unlensed) SN Ia rate density at redshift_val [events/yr per unit z]."""
+    return float(sn_ia_rate_calculator().source_rate_density(redshift_val))
 
 
 def cc_ul_weight(redshift_val):
-    """Intrinsic (unlensed) core-collapse SN rate weight at ``redshift_val``.
-
-    Uses the star-formation-tracking core-collapse rate
-    (:func:`cmsne.sn_rates.cc_rate_grid`), which peaks near z ~ 1.9 -- distinct from
-    the delay-time-distribution SN Ia rate (peak z ~ 1). An earlier version reused the
-    Ia grid here, which gave the contaminant population the wrong redshift evolution.
-    """
-    redshift, nCC = cc_rate_grid()
-    index = np.argmin(np.abs(redshift - redshift_val))
-    return nCC[index]
+    """Intrinsic (unlensed) core-collapse SN rate density at redshift_val [events/yr per unit z]."""
+    return float(sn_cc_rate_calculator().source_rate_density(redshift_val))
 
 
 def cc_l_weight(redshift_val, magnification):
-    """Lensed core-collapse SN weight: intrinsic CC rate times the strong-lensing optical depth.
+    """Lensed core-collapse SN weight: intrinsic CC rate density times strong-lensing optical depth.
 
-    The intrinsic rate tracks the star-formation history
-    (:func:`cmsne.sn_rates.cc_rate_grid`). The ``31e9 pc`` (31 Gpc) scale must match
-    the one in :func:`cmsne.sn_rates.prob_` and :func:`l_weight`; they are the same
-    normalisation.
+    Differential optical depth: dtau/dmu_dz = (D_com(z) / 31 Gpc)^3 * mu^(-3).
     """
-    redshift, nCC = cc_rate_grid()
-    index = np.argmin(np.abs(redshift - redshift_val))
-    z_weight = nCC[index]
-    redshift_units = redshift_val * cu.redshift
-    distance_unit = redshift_units.to(u.pc, cu.redshift_distance(Planck18, kind="comoving"))
-    distance = distance_unit.value
-    u_weight = 0.5 * ((distance / 31e9) ** 3) * ((magnification) ** -2)
-    return z_weight * u_weight
+    f_z = cc_ul_weight(redshift_val)
+    dtau = LensingOpticalDepth.dtau_dmu_dz(redshift_val, magnification)
+    return float(f_z * dtau)
 
 
 def l_weight(redshift_val, magnification):
-    """Lensed SN Ia weight: intrinsic rate times the strong-lensing optical depth.
+    """Lensed SN Ia weight: intrinsic Ia rate density times strong-lensing optical depth.
 
-    The ``31e9 pc`` (31 Gpc) scale must match the one in
-    :func:`cmsne.sn_rates.prob_`; they are the same normalisation.
+    Differential optical depth: dtau/dmu_dz = (D_com(z) / 31 Gpc)^3 * mu^(-3).
     """
-    redshift, nSN1A = rate_grid()
-    index = np.argmin(np.abs(redshift - redshift_val))
-    z_weight = nSN1A[index]
-    redshift_units = redshift_val * cu.redshift
-    distance_unit = redshift_units.to(u.pc, cu.redshift_distance(Planck18, kind="comoving"))
-    distance = distance_unit.value
-    u_weight = 0.5 * ((distance / 31e9) ** 3) * ((magnification) ** -2)
-    total = z_weight * u_weight
-    return total
-
-
+    f_z = ul_weight(redshift_val)
+    dtau = LensingOpticalDepth.dtau_dmu_dz(redshift_val, magnification)
+    return float(f_z * dtau)
 def _angular_diameter_distance_z1z2(cosmo, z1, z2):
     """Angular diameter distance between two redshifts, across astropy versions.
 
