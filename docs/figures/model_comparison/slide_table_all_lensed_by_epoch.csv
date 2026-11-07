@@ -1,0 +1,7 @@
+Model,AUC (+0d),AUC (+3d),AUC (+14d),AUC (+30d),AUC (+60d),TPR@1% (+0d),TPR@1% (+3d),TPR@1% (+14d),TPR@1% (+30d),TPR@1% (+60d)
+1. Baseline GBDT (30 feat - Isotonic),0.578,0.637,0.678,0.737,0.748,3.8%,9.8%,14.0%,17.9%,16.9%
+2. Smooth-Calibrated GBDT (30 feat - Sigmoid),0.579,0.633,0.673,0.728,0.755,4.0%,10.2%,15.3%,18.4%,18.2%
+3. Physics-Enriched GBDT (Snap+Fade+Prefix),0.645,0.683,0.733,0.775,0.783,7.6%,11.3%,16.5%,18.1%,18.8%
+4. Smooth Spline GAM (B-Splines + Masks),0.607,0.665,0.715,0.745,0.753,3.9%,6.9%,12.2%,14.7%,14.7%
+5. Mask-Aware Neural MLP Ensemble,0.641,0.658,0.700,0.739,0.748,7.7%,8.5%,14.8%,16.1%,16.4%
+6. Hybrid Ensemble (Enriched GBDT + MLP),0.655,0.693,0.732,0.766,0.775,8.3%,10.1%,14.4%,19.5%,20.2%
