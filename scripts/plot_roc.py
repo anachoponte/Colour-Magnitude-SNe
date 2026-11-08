@@ -15,10 +15,10 @@ for issue #16's investigation), and produces:
                            grid step's curve.
 
 ``--target`` chooses which classes count as signal: the default
-``lensed_ia`` treats only ``lensed_Ia`` as signal (unchanged filenames).
+``lensed_ia`` treats only ``lensed_Ia`` as signal vs ``unlensed_*`` background
+(other lensed subtypes are never counted as background contaminants).
 ``all_lensed`` pools all five ``lensed_*`` classes as signal and all five
-``unlensed_*`` classes as background (see the same rationale in
-``plot_evolving_boundaries.py``'s module docstring), writing to filenames
+``unlensed_*`` classes as background, writing to filenames
 with an ``_alllensed`` suffix so both targets' outputs can coexist.
 
 Under ``--target all_lensed`` only, three more evaluations run against the
@@ -62,6 +62,7 @@ from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
 
 CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn2n',
            'lensed_sn2p', 'unlensed_sn1bc', 'unlensed_sn2l', 'unlensed_sn2n', 'unlensed_sn2p']
+UNLENSED_CLASSES = [c for c in CLASSES if c.startswith('unlensed_')]
 
 # Same tab10 indexing as plot_evolving_boundaries.py's identically-ordered
 # CLASSES list, so a given class's colour matches across every figure.
@@ -69,13 +70,13 @@ CLASS_COLORS = dict(zip(CLASSES, plt.cm.tab10(np.linspace(0, 1, len(CLASSES)))))
 
 
 def load_population(data_dir, signal_classes):
-    """Load every class's pkl, split into signal (signal_classes) vs background (rest)."""
+    """Load every class's pkl, split into signal (signal_classes) vs background (unlensed_* only)."""
     pop = {}
     for c in CLASSES:
         with open(os.path.join(data_dir, f'{c}.pkl'), 'rb') as f:
             pop[c] = pickle.load(f)['events']
     signal = [e for c in signal_classes for e in pop[c]]
-    background = [e for c in CLASSES if c not in signal_classes for e in pop[c]]
+    background = [e for c in UNLENSED_CLASSES for e in pop[c]]
     return signal, background
 
 
@@ -215,7 +216,7 @@ def plot_rate_by_subtype(rate_by_class, signal_classes, out_path):
     class/step with zero flagged weight is simply absent from its
     log-scale line (matplotlib drops non-positive points), not an error.
     """
-    background_classes = [c for c in CLASSES if c not in signal_classes]
+    background_classes = UNLENSED_CLASSES
     days = list(TRAJECTORY_GRID)
     ylim_sig = _rate_ylim(rate_by_class, signal_classes)
     ylim_bg = _rate_ylim(rate_by_class, background_classes)
@@ -241,7 +242,7 @@ def make_rate_gif(rate_by_class, signal_classes, out_path, duration_ms=900):
     frames (see _rate_ylim) so only the revealed data changes, not the
     axis scale.
     """
-    background_classes = [c for c in CLASSES if c not in signal_classes]
+    background_classes = UNLENSED_CLASSES
     days = list(TRAJECTORY_GRID)
     ylim_sig = _rate_ylim(rate_by_class, signal_classes)
     ylim_bg = _rate_ylim(rate_by_class, background_classes)
