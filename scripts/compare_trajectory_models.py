@@ -75,9 +75,12 @@ LENSED_CLASSES = [c for c in CLASSES if c.startswith('lensed_')]
 # citation/derivation note (same figures, kept in sync between both scripts).
 # lensed_ia: ~10/yr (Oguri 2010; Wojtak 2019; Goldstein 2019), ~100,000/yr
 # unlensed detected SNe -- both already cited in docs/methods_and_results.md.
-# all_lensed: order-of-magnitude placeholder pending issue #43.
+# all_lensed: derived (issue #43) from the production dataset's own summed
+# per-event rate weights, scaling the literature-anchored lensed_ia figure by
+# the simulation's lensed-CC:lensed-Ia rate ratio (1.741, not the old
+# CC_TO_IA_RATE=3.5 local-volumetric placeholder).
 ANNUAL_RATES = {
-    'all_lensed': {'N_sig': 45.0, 'N_bg': 100_000.0},
+    'all_lensed': {'N_sig': 27.4, 'N_bg': 100_000.0},
     'lensed_ia':  {'N_sig': 10.0, 'N_bg': 100_000.0},
 }
 
