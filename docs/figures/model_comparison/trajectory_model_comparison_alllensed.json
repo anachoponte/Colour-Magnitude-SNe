@@ -3,14 +3,14 @@
   "signal_label": "All Lensed SNe",
   "models": {
     "1. Baseline GBDT (30 feat, Isotonic)": {
-      "fit_time_sec": 4.13,
+      "fit_time_sec": 4.98,
       "auc_full": 0.7475426312980162,
       "tpr_at_10pct_fpr": 0.38190640486276933,
       "tpr_at_1pct_fpr": 0.16872478478013764,
       "tpr_at_01pct_fpr": 0.09343400190226413,
       "tpr_at_001pct_fpr": 0.03686697836114294,
       "zero_fp_tpr": 0.018137591590976672,
-      "zero_fp_tp_per_yr": 0.8161916215939502,
+      "zero_fp_tp_per_yr": 0.4969700095927608,
       "zero_fp_raw_count": 1073,
       "auc_by_day": {
         "0": 0.5777082915042908,
@@ -28,14 +28,14 @@
       }
     },
     "2. Smooth-Calibrated GBDT (30 feat, Sigmoid)": {
-      "fit_time_sec": 6.81,
+      "fit_time_sec": 8.68,
       "auc_full": 0.7548151618533052,
       "tpr_at_10pct_fpr": 0.40805403515022687,
       "tpr_at_1pct_fpr": 0.18155084450665085,
       "tpr_at_01pct_fpr": 0.0818443587797971,
       "tpr_at_001pct_fpr": 0.04132457962849895,
       "zero_fp_tpr": 0.02513899415959917,
-      "zero_fp_tp_per_yr": 1.1312547371819626,
+      "zero_fp_tp_per_yr": 0.6888084399730172,
       "zero_fp_raw_count": 1434,
       "auc_by_day": {
         "0": 0.5792318093029609,
@@ -53,14 +53,14 @@
       }
     },
     "3. Physics-Enriched GBDT (Snap+Fade+Prefix)": {
-      "fit_time_sec": 74.79,
+      "fit_time_sec": 92.42,
       "auc_full": 0.7826793008656596,
       "tpr_at_10pct_fpr": 0.4723058622276785,
       "tpr_at_1pct_fpr": 0.18791467940668108,
       "tpr_at_01pct_fpr": 0.12133580419338844,
       "tpr_at_001pct_fpr": 0.0257735359313023,
       "zero_fp_tpr": 0.030000746058285174,
-      "zero_fp_tp_per_yr": 1.3500335726228327,
+      "zero_fp_tp_per_yr": 0.8220204419970137,
       "zero_fp_raw_count": 1520,
       "auc_by_day": {
         "0": 0.6452405204875862,
@@ -78,14 +78,14 @@
       }
     },
     "4. Smooth Spline GAM (B-Splines + Masks)": {
-      "fit_time_sec": 120.29,
+      "fit_time_sec": 165.67,
       "auc_full": 0.7531001195840774,
       "tpr_at_10pct_fpr": 0.3746894924759045,
       "tpr_at_1pct_fpr": 0.14744579598970686,
       "tpr_at_01pct_fpr": 0.037144029607120876,
       "tpr_at_001pct_fpr": 0.01541506567221801,
       "zero_fp_tpr": 0.0016645012783829964,
-      "zero_fp_tp_per_yr": 0.07490255752723483,
+      "zero_fp_tp_per_yr": 0.0456073350276941,
       "zero_fp_raw_count": 296,
       "auc_by_day": {
         "0": 0.6072596192962618,
@@ -103,14 +103,14 @@
       }
     },
     "5. Mask-Aware Neural MLP Ensemble": {
-      "fit_time_sec": 131.73,
+      "fit_time_sec": 168.54,
       "auc_full": 0.7479653334563094,
       "tpr_at_10pct_fpr": 0.44428269896248596,
       "tpr_at_1pct_fpr": 0.16386238749981344,
       "tpr_at_01pct_fpr": 0.057537902178283064,
       "tpr_at_001pct_fpr": 0.03987765216056473,
       "zero_fp_tpr": 0.03445072747825451,
-      "zero_fp_tp_per_yr": 1.550282736521453,
+      "zero_fp_tp_per_yr": 0.9439499329041736,
       "zero_fp_raw_count": 1808,
       "auc_by_day": {
         "0": 0.6412641238824461,
@@ -128,14 +128,14 @@
       }
     },
     "6. Hybrid Ensemble (Enriched GBDT + Smooth MLP)": {
-      "fit_time_sec": 206.52,
+      "fit_time_sec": 260.96,
       "auc_full": 0.775447038706358,
       "tpr_at_10pct_fpr": 0.49800281482808956,
       "tpr_at_1pct_fpr": 0.2015000299462717,
       "tpr_at_01pct_fpr": 0.09653261602561852,
       "tpr_at_001pct_fpr": 0.07835893466260549,
       "zero_fp_tpr": 0.03280735555797665,
-      "zero_fp_tp_per_yr": 1.4763310001089491,
+      "zero_fp_tp_per_yr": 0.8989215422885601,
       "zero_fp_raw_count": 1545,
       "auc_by_day": {
         "0": 0.6549129058984208,

@@ -32,15 +32,28 @@ UNLENSED_CLASSES = [c for c in CLASSES if c.startswith('unlensed_')]
 #   contradicted those.
 # Unlensed: ~100,000/yr detected SNe, matching the "~10^5 detected SNe/yr"
 #   figure in docs/methods_and_results.md Sec 3.6 (not the previous 1,000,000/yr).
-# All lensed (Ia + CC): NOT independently literature-validated -- scaled from
-#   the lensed Ia figure by the project's own calibrated LOCAL unlensed CC:Ia
-#   rate ratio (CC_TO_IA_RATE=3.5 in cmsne/lsst.py) as an order-of-magnitude
-#   placeholder (10 * (1 + 3.5) = 45/yr). This ignores that lensed CC
-#   detectability and the lensing optical depth integral both differ from Ia's
-#   -- see https://github.com/anachoponte/Colour-Magnitude-SNe/issues/43 for
-#   the follow-up to derive it properly from cmsne.rates / summed event weights.
+# All lensed (Ia + CC): derived per issue #43 by summing each class's own
+#   calibrated per-event rate weight (cmsne.rates.absolute_rate_weight, the
+#   same quantity already stored as event['weight']) over the full production
+#   population in results/dual_59297152 -- i.e. the project's own lensing
+#   optical depth integral and per-template luminosity function/redshift
+#   reach, not the local-volumetric CC_TO_IA_RATE=3.5 proxy this replaces.
+#   Raw simulated totals: lensed_Ia=146.8/yr, lensed CC (sn1bc+sn2l+sn2n+sn2p)
+#   =255.6/yr, giving a CC:Ia ratio of 1.741 (vs the old placeholder's 3.5).
+#   NOTE: the raw simulated lensed_Ia total (146.8/yr) overshoots the 10/yr
+#   literature anchor by ~14.7x (and the raw unlensed total overshoots
+#   100,000/yr by ~7.5x), almost certainly because min_detections=5 (SNR>5 on
+#   5+ visits) has no additional lensed-image-resolution/confirmation cut the
+#   literature discovery-rate estimates assume. That absolute mismatch isn't
+#   resolved here -- so rather than use the raw simulated total directly, we
+#   keep the literature-anchored 10/yr for lensed Ia and scale it by the
+#   simulation's own CC:Ia *ratio* (1.741) to get all_lensed. Both lensed
+#   classes share the same selection function (same cadence, same
+#   min_detections cut, same lensing optical depth model), so this ratio is
+#   far less sensitive to that absolute-normalization mismatch than either
+#   raw total is on its own.
 ANNUAL_RATES = {
-    'all_lensed': {'N_sig': 45.0, 'N_bg': 100_000.0},
+    'all_lensed': {'N_sig': 27.4, 'N_bg': 100_000.0},
     'lensed_ia':  {'N_sig': 10.0, 'N_bg': 100_000.0},
 }
 
