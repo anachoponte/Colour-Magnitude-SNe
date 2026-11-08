@@ -9,7 +9,7 @@
 Across this session, we audited, visualised, and substantially upgraded the LSST gravitationally lensed supernova classification pipeline:
 
 1. **Removed Cross-Subtype Lensed Contamination:** Fixed both `scripts/plot_roc.py` and `scripts/plot_evolving_boundaries.py` so that when evaluating an individual lensed subtype (such as `lensed_Ia`), other lensed supernova subtypes are **never** treated as false-positive background contaminants (`background = unlensed_*` strictly).
-2. **Quantified the LSST Base-Rate Trap & Zero-False-Positive Sweet Spot:** Demonstrated how the `1 : 10,000` (`10/yr` lensed Ia vs `100,000/yr` unlensed -- the literature figure already cited elsewhere in this project, Oguri et al. 2010; Wojtak et al. 2019; Goldstein et al. 2019, not the uncited `50/yr` and `1,000,000/yr` an earlier draft of this document used) and `~1 : 2,200` (`45/yr` all lensed vs `100,000/yr` unlensed -- an order-of-magnitude placeholder pending [issue #43](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/43), not an independently literature-validated figure) cosmic rate ratios affect real telescope follow-up purity, and mapped the `TP / FP` ratio and `FPR = 0` "Zero-False-Positive Sweet Spot".
+2. **Quantified the LSST Base-Rate Trap & Zero-False-Positive Sweet Spot:** Demonstrated how the `1 : 10,000` (`10/yr` lensed Ia vs `100,000/yr` unlensed -- the literature figure already cited elsewhere in this project, Oguri et al. 2010; Wojtak et al. 2019; Goldstein et al. 2019, not the uncited `50/yr` and `1,000,000/yr` an earlier draft of this document used) and `~1 : 3,650` (`27.4/yr` all lensed vs `100,000/yr` unlensed -- derived in [issue #43](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/43) by scaling the literature-anchored lensed-Ia rate by the production dataset's own summed per-event rate-weight ratio between lensed CC and lensed Ia, `1.741`, replacing the earlier `45/yr` local-volumetric `CC_TO_IA_RATE=3.5` placeholder) cosmic rate ratios affect real telescope follow-up purity, and mapped the `TP / FP` ratio and `FPR = 0` "Zero-False-Positive Sweet Spot".
 3. **Resolved the Scatter-vs-Heatmap Visual Paradox (`size + opacity` + High-Contrast Palette + `1σ` Error Bars):** Identified why unweighted scatter plots previously appeared inconsistent with rate-weighted probability surfaces, compared 4 visual rate-weight encodings, adopted **`size + opacity` (`size_alpha`)** with a high-contrast **`PuBu` + vivid marker** palette and **`1σ` photometric error bars**, and regenerated 208 standard boundary figures across all filter pairs (`ug, gr, ri, iz, zy`) and subtypes.
 4. **Benchmarked Improvements & Non-Tree Replacements for the Full-Trajectory Classifier (`~4.1x` Increase in Zero-FP Pure Discoveries vs the Deployed Baseline):** Built a 6-model benchmark testing smooth Sigmoid calibration, physics-enriched trajectory features (snapshot magnitudes, time-dilated fade from peak, broad-baseline colours, photometric uncertainties), causal prefix training for early `+0d .. +14d` alerts, Smooth Spline GAMs, Mask-Aware Neural MLP ensembles, and a **Hybrid (Physics-Enriched GBDT + Mask-Aware Smooth MLP)** ensemble. Measured against the *real, currently-deployed* classifier's own zero-false-positive operating point (Finding 2: **0.6 lensed Ia/yr**, 5.6% recall, from running the actual production `TrajectoryClassifier`), the Hybrid ensemble's pure zero-false-positive yield of **2.3 lensed Ia/yr (23.3% recall)** is a **~4.1x improvement** -- smaller than the `>7x` an earlier draft of this document quoted, which compared against this benchmark's own internal, non-deployed "Model 1" row (0.3/yr) instead of the deployed baseline; see Finding 4's caveat for why those two "baselines" differ (Model 1 omits the production default's noise-injection replication). The AUC comparison is unaffected by this: `+14d` early-warning `ROC-AUC` jumped from **0.846 to 0.924** within the benchmark, surpassing the weakest model's `+60d` AUC (0.918) within 2 weeks of trigger.
 
@@ -35,7 +35,7 @@ Across this session, we audited, visualised, and substantially upgraded the LSST
 3. **`scripts/compare_mag_modes.py`** (SLURM wrapper: `scripts/run_compare_mag_modes_bluebear.sh`)
    - Quantitatively benchmarks 2D (`colour + magnitude`) classification in `snapshot` vs `matched` (`peakmag`) mode across `g-r`, `r-i`, and `i-z` at `+0d, +3d, +14d, +30d, +60d`.
 4. **`scripts/investigate_purity_tradeoff.py`** (SLURM wrapper: `scripts/run_investigate_purity_bluebear.sh`)
-   - Computes annual LSST `TP/yr`, `FP/yr`, `TP : FP` ratios, sample purity `TP / (TP + FP)`, and the empirical `FPR = 0` pure sweet spot across the full ROC curve for both `lensed_ia` (`10/yr`, Oguri 2010; Wojtak 2019; Goldstein 2019) and `all_lensed` (`45/yr`, order-of-magnitude placeholder pending issue #43) against `100,000/yr` unlensed SNe.
+   - Computes annual LSST `TP/yr`, `FP/yr`, `TP : FP` ratios, sample purity `TP / (TP + FP)`, and the empirical `FPR = 0` pure sweet spot across the full ROC curve for both `lensed_ia` (`10/yr`, Oguri 2010; Wojtak 2019; Goldstein 2019) and `all_lensed` (`27.4/yr`, derived per issue #43 from the production dataset's own summed per-event rate weights) against `100,000/yr` unlensed SNe.
 5. **`scripts/plot_weight_encodings.py`** (SLURM wrapper: `scripts/run_weight_encodings_bluebear.sh`)
    - Generates 4-panel (`1x4`) and 5-row (`5x4`) comparison figures contrasting `unweighted`, `size`, `opacity`, `colour`, and `size + opacity` encodings on identical data slices.
 6. **`scripts/compare_trajectory_models.py`** (SLURM wrapper: `scripts/run_model_comparison_bluebear.sh`)
@@ -57,22 +57,22 @@ Across this session, we audited, visualised, and substantially upgraded the LSST
 - By **`+60d`**, keeping *both* current snapshot brightness and historical peak brightness—specifically their difference `fade_b(t) = mag_b(t) - peakmag_b(t)`—gives the classifier direct access to the light-curve decline rate.
 
 ### Finding 2: The LSST Base-Rate Paradox & Telescope Follow-Up Operating Points (`investigate_purity_tradeoff.py`)
-Even when a classifier achieves `ROC-AUC > 0.91`, multiplying `TPR` and `FPR` by true annual LSST rates (`N_sig = 10/yr` for lensed Ia -- Oguri et al. 2010; Wojtak et al. 2019; Goldstein et al. 2019, the same figure already cited in `docs/methods_and_results.md` -- or `45/yr` for all lensed, an order-of-magnitude placeholder pending [issue #43](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/43), vs `N_bg = 100,000/yr` unlensed) exposes why moderate false-positive rates fail for spectroscopic follow-up. These are the real, currently-deployed `TrajectoryClassifier`'s own numbers (isotonic calibration, uncertainty-aware noise injection, `target_fpr=0.10`):
+Even when a classifier achieves `ROC-AUC > 0.91`, multiplying `TPR` and `FPR` by true annual LSST rates (`N_sig = 10/yr` for lensed Ia -- Oguri et al. 2010; Wojtak et al. 2019; Goldstein et al. 2019, the same figure already cited in `docs/methods_and_results.md` -- or `27.4/yr` for all lensed, derived in [issue #43](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/43) from the production dataset's own summed per-event rate weights, vs `N_bg = 100,000/yr` unlensed) exposes why moderate false-positive rates fail for spectroscopic follow-up. These are the real, currently-deployed `TrajectoryClassifier`'s own numbers (isotonic calibration, uncertainty-aware noise injection, `target_fpr=0.10`):
 
 | Operating Regime | Target FPR | Lensed Ia TP / yr | Unlensed FP / yr | Lensed Ia Purity | All Lensed TP / yr | All Lensed Purity |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| Standard Alert Broker | 10% | 7.8 / yr | ~10,290 / yr | 0.08% | 19.1 / yr | 0.19% |
-| Low Contamination | 1% | 4.4 / yr | ~1,000 / yr | 0.44% | 8.4 / yr | 0.75% |
-| Strict Filter | 0.1% | 1.9 / yr | ~133 / yr | 1.41% | 3.9 / yr | 3.97% |
-| Spectroscopic Candidate | 0.01% | 1.5 / yr | ~7 / yr | 17.1% | 2.6 / yr | 20.7% |
-| **Zero-FP Sweet Spot (Deployed Baseline)** | **0%** | **0.6 / yr (5.6%)** | **0 / yr** | **100%** | **1.0 / yr (2.3%)** | **100%** |
+| Standard Alert Broker | 10% | 7.8 / yr | ~10,290 / yr | 0.08% | 11.6 / yr | 0.12% |
+| Low Contamination | 1% | 4.4 / yr | ~1,000 / yr | 0.44% | 5.1 / yr | 0.46% |
+| Strict Filter | 0.1% | 1.9 / yr | ~133 / yr | 1.41% | 2.4 / yr | 2.46% |
+| Spectroscopic Candidate | 0.01% | 1.5 / yr | ~7 / yr | 17.1% | 1.6 / yr | 13.70% |
+| **Zero-FP Sweet Spot (Deployed Baseline)** | **0%** | **0.6 / yr (5.6%)** | **0 / yr** | **100%** | **0.6 / yr (2.3%)** | **100%** |
 
-*Conclusion:* Real spectroscopic target selection lives entirely in the `FPR <= 0.01%` to `FPR = 0%` tail—making extreme-tail probability resolution and false-outlier rejection far more important than bulk `FPR > 5%` ROC area. (An earlier draft of this document used uncited 50/250/1,000,000-per-year assumptions here, giving larger but unsupported absolute `/yr` figures; the recall percentages in parentheses are unaffected by that fix and were always correct -- only the annual counts rescale.)
+*Conclusion:* Real spectroscopic target selection lives entirely in the `FPR <= 0.01%` to `FPR = 0%` tail—making extreme-tail probability resolution and false-outlier rejection far more important than bulk `FPR > 5%` ROC area. (An earlier draft of this document used uncited 50/250/1,000,000-per-year assumptions here, giving larger but unsupported absolute `/yr` figures; the recall percentages in parentheses are unaffected by that fix and were always correct -- only the annual counts rescale. The All Lensed column was rescaled again when issue #43's placeholder `45/yr` was replaced by the `27.4/yr` derived figure.)
 
 ### Finding 3: Resolving the Heatmap vs Scatter-Plot Mismatch
 We investigated why the 2D probability heatmaps previously appeared misaligned with the overlaid scatter points in certain regions (e.g. high-probability zones containing many visible unlensed dots, or low-probability zones with isolated lensed stars):
 1. **Unweighted Markers vs Rate-Weighted Classifier:** Each of the 10 classes was simulated with `100,000` Monte Carlo events so rare tails were well sampled, but each event carries a physical `weight` spanning several orders of magnitude. Visually plotting unweighted dots made rare, near-zero-weight Monte Carlo tail draws look like massive background clusters, whereas the classifier rightly weighted them according to their tiny physical sky rate.
-2. **Balanced Training Prior (`P_balanced`) on 2D Heatmaps:** The 2D probability surface shows balanced class likelihood (`50/50` total signal vs background weight) so the `P = 0.5` contour marks where normalized signal density equals normalized background density (`TPR` vs `FPR` crossover), rather than the `1 : 2,200` raw sky prior (under which `P_sky` would be `< 0.01` almost everywhere on a single 2D colour slice).
+2. **Balanced Training Prior (`P_balanced`) on 2D Heatmaps:** The 2D probability surface shows balanced class likelihood (`50/50` total signal vs background weight) so the `P = 0.5` contour marks where normalized signal density equals normalized background density (`TPR` vs `FPR` crossover), rather than the `1 : 3,650` raw sky prior (under which `P_sky` would be `< 0.01` almost everywhere on a single 2D colour slice).
 3. **Other Lensed Subtypes Previously Counted as Background in `lensed_Ia` Plots:** Previously, `lensed_sn1bc`, `lensed_sn2l`, `lensed_sn2n`, and `lensed_sn2p` sitting in the bright/red lensed region were labelled `y = 0` ("background") during `lensed_Ia` 2D fits, carving artificial low-probability holes right through the lensed locus. Excluding non-target lensed SNe from the contaminant pool eliminated this artifact.
 4. **Axis-Aligned GBDT Extrapolation & Isotonic Step Plateaus in Sparse Corners:** Standard decision trees extrapolate flat rectangular boxes to the plot borders where data density vanishes, and Isotonic calibration snaps continuous tree scores onto discrete step plateaus.
 5. **Photometric Scatter Near the LSST Detection Limit:** Adding `1σ` error bars (`*_errorbars.png`) confirmed that while bright events (`r < 21.5`) have tight uncertainties (`< 0.04 mag`), faint unlensed SNe near `r ~ 23.5 - 24.5` have `±0.20 - 0.35 mag` colour uncertainties that scatter a thin halo horizontally into redder colours.
@@ -100,16 +100,18 @@ We tested 6 full-trajectory models on the exact same 70/30 held-out test split (
 | **5. Mask-Aware Neural MLP** | 0.780 | 0.911 | 0.930 | 77.6% | 48.2% | 35.1% | 16.7% | **1.7 / yr** |
 | **6. Hybrid (Enriched GBDT + MLP)** | 0.804 | **0.924** | **0.946** | **81.4%** | **52.9%** | **36.8%** | **23.3%** | **2.3 / yr** |
 
-#### Summary Benchmark — All Lensed SNe (`45 / yr` vs `100,000 / yr` Unlensed)
+#### Summary Benchmark — All Lensed SNe (`27.4 / yr` vs `100,000 / yr` Unlensed)
 
 | Model | AUC (+0d) | AUC (+14d) | AUC (+60d) | Recall @ 10% FPR | Recall @ 1% FPR | Recall @ 0.1% FPR | Zero-FP Recall (FPR = 0%) | Pure Yield / yr |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **1. Baseline GBDT** | 0.578 | 0.678 | 0.748 | 38.2% | 16.9% | 9.3% | 1.8% | **0.8 / yr** |
-| **2. Smooth-Calibrated GBDT** | 0.579 | 0.673 | 0.755 | 40.8% | 18.2% | 8.2% | 2.5% | **1.1 / yr** |
-| **3. Physics-Enriched + Prefix GBDT** | 0.645 | **0.733** | **0.783** | 47.2% | 18.8% | **12.1%** | 3.0% | **1.4 / yr** |
-| **4. Smooth Spline GAM** | 0.607 | 0.715 | 0.753 | 37.5% | 14.7% | 3.7% | 0.2% | **0.1 / yr** |
-| **5. Mask-Aware Neural MLP** | 0.641 | 0.700 | 0.748 | 44.4% | 16.4% | 5.8% | **3.4%** | **1.6 / yr** |
-| **6. Hybrid (Enriched GBDT + MLP)** | **0.655** | 0.732 | 0.775 | **49.8%** | **20.2%** | 9.7% | 3.3% | **1.5 / yr** |
+| **1. Baseline GBDT** | 0.578 | 0.678 | 0.748 | 38.2% | 16.9% | 9.3% | 1.8% | **0.5 / yr** |
+| **2. Smooth-Calibrated GBDT** | 0.579 | 0.673 | 0.755 | 40.8% | 18.2% | 8.2% | 2.5% | **0.7 / yr** |
+| **3. Physics-Enriched + Prefix GBDT** | 0.645 | **0.733** | **0.783** | 47.2% | 18.8% | **12.1%** | 3.0% | **0.8 / yr** |
+| **4. Smooth Spline GAM** | 0.607 | 0.715 | 0.753 | 37.5% | 14.7% | 3.7% | 0.2% | **0.0 / yr** |
+| **5. Mask-Aware Neural MLP** | 0.641 | 0.700 | 0.748 | 44.4% | 16.4% | 5.8% | **3.4%** | **0.9 / yr** |
+| **6. Hybrid (Enriched GBDT + MLP)** | **0.655** | 0.732 | 0.775 | **49.8%** | **20.2%** | 9.7% | 3.3% | **0.9 / yr** |
+
+(Pure Yield /yr rescaled again vs the prior draft when issue #43's `45/yr` placeholder was replaced by the `27.4/yr` derived figure; the underlying AUC/Recall/Zero-FP-Recall percentages above are unchanged -- same seed, same split, same classifiers.)
 
 #### Why Each Upgrade Worked:
 - **Sigmoid vs Isotonic Calibration:** Eliminated top-plateau score ties so a single outlier background event no longer blocks dozens of higher-log-odds lensed SNe (`0.3 -> 0.6/yr`).
@@ -135,4 +137,4 @@ We tested 6 full-trajectory models on the exact same 70/30 held-out test split (
 - **`docs/figures/subtypes_size_alpha/` (48 PNGs):**
   - Individual core-collapse lensed subtypes (`lensed_sn1bc`, `lensed_sn2l`, `lensed_sn2n`, `lensed_sn2p`) in `g-r` and `r-i` against strictly unlensed background, with `size_alpha`, high-contrast colours, and `*_errorbars.png` counterparts.
 - **`docs/figures/model_comparison/`:**
-  - 6-architecture benchmark plots (`trajectory_model_comparison_lensed_ia.png`, `trajectory_model_comparison_alllensed.png`), raw JSON metrics (`*.json`), and slide-ready CSV tables (`slide_table_*.csv`).
+  - 6-architecture benchmark plots (`trajectory_model_comparison_lensed_ia.png`, `trajectory_model_comparison_alllensed.png`) and raw JSON metrics (`*.json`). (An earlier draft of this document also listed `slide_table_*.csv` tables here; those were orphaned artifacts from before any of the annual-rate fixes -- "Pure Yield / yr (out of 50)" / "(out of 250)" -- that no script in the repo regenerates, so they were removed rather than corrected a third time.)
