@@ -1,0 +1,278 @@
+{
+  "gr": {
+    "0.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.7609013798818453,
+        "tpr_at_fpr05": 0.7503142709642894,
+        "auc": 0.8430883994210533,
+        "n_test_sig": 616,
+        "n_test_bg": 2951
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.7609013798818453,
+        "tpr_at_fpr05": 0.7503142709642894,
+        "auc": 0.8430883994210533,
+        "n_test_sig": 616,
+        "n_test_bg": 2951
+      },
+      "mag_key_matched": "peakmag_r_d0",
+      "mag_key_snapshot": "r_d0"
+    },
+    "3.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.586734244732255,
+        "tpr_at_fpr05": 0.5449430109864982,
+        "auc": 0.801869576309408,
+        "n_test_sig": 834,
+        "n_test_bg": 3830
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.5910691958730933,
+        "tpr_at_fpr05": 0.5478080240886101,
+        "auc": 0.7963524170347754,
+        "n_test_sig": 834,
+        "n_test_bg": 3830
+      },
+      "mag_key_matched": "peakmag_r_d3",
+      "mag_key_snapshot": "r_d3"
+    },
+    "14.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.5132615665785172,
+        "tpr_at_fpr05": 0.3421871577827043,
+        "auc": 0.6262594440142176,
+        "n_test_sig": 691,
+        "n_test_bg": 2340
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.513043457406563,
+        "tpr_at_fpr05": 0.38868639723390974,
+        "auc": 0.7631626107258865,
+        "n_test_sig": 691,
+        "n_test_bg": 2340
+      },
+      "mag_key_matched": "peakmag_r_d14",
+      "mag_key_snapshot": "r_d14"
+    },
+    "30.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.4185706914888526,
+        "tpr_at_fpr05": 0.3823888238210971,
+        "auc": 0.8214520247893358,
+        "n_test_sig": 642,
+        "n_test_bg": 2114
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.9233809085098934,
+        "tpr_at_fpr05": 0.6333440877976627,
+        "auc": 0.944731392527416,
+        "n_test_sig": 642,
+        "n_test_bg": 2114
+      },
+      "mag_key_matched": "peakmag_r_d30",
+      "mag_key_snapshot": "r_d30"
+    },
+    "60.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.6475984072298566,
+        "tpr_at_fpr05": 0.2645844568524261,
+        "auc": 0.8794829642694221,
+        "n_test_sig": 393,
+        "n_test_bg": 1459
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.48785408294390015,
+        "tpr_at_fpr05": 0.2106232999509169,
+        "auc": 0.7700359175817089,
+        "n_test_sig": 393,
+        "n_test_bg": 1459
+      },
+      "mag_key_matched": "peakmag_r_d60",
+      "mag_key_snapshot": "r_d60"
+    }
+  },
+  "ri": {
+    "0.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.6240504062763603,
+        "tpr_at_fpr05": 0.5657451970366827,
+        "auc": 0.8644349032122562,
+        "n_test_sig": 2444,
+        "n_test_bg": 7590
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.6240504062763603,
+        "tpr_at_fpr05": 0.5657451970366827,
+        "auc": 0.8644349032122562,
+        "n_test_sig": 2444,
+        "n_test_bg": 7590
+      },
+      "mag_key_matched": "peakmag_i_d0",
+      "mag_key_snapshot": "i_d0"
+    },
+    "3.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.6055111814430828,
+        "tpr_at_fpr05": 0.4102734702726744,
+        "auc": 0.8546880191213386,
+        "n_test_sig": 3098,
+        "n_test_bg": 9460
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.6237991274992092,
+        "tpr_at_fpr05": 0.4191419344097982,
+        "auc": 0.8543137788343869,
+        "n_test_sig": 3098,
+        "n_test_bg": 9460
+      },
+      "mag_key_matched": "peakmag_i_d3",
+      "mag_key_snapshot": "i_d3"
+    },
+    "14.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.6889105853438345,
+        "tpr_at_fpr05": 0.6119558303083928,
+        "auc": 0.8650238259561833,
+        "n_test_sig": 2420,
+        "n_test_bg": 6388
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.6710466988147631,
+        "tpr_at_fpr05": 0.6426231287563601,
+        "auc": 0.9056561040157712,
+        "n_test_sig": 2420,
+        "n_test_bg": 6388
+      },
+      "mag_key_matched": "peakmag_i_d14",
+      "mag_key_snapshot": "i_d14"
+    },
+    "30.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.546636415431861,
+        "tpr_at_fpr05": 0.46553346219371905,
+        "auc": 0.8934721711800844,
+        "n_test_sig": 2185,
+        "n_test_bg": 5532
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.6161267826437827,
+        "tpr_at_fpr05": 0.5568890046877647,
+        "auc": 0.9038091396781756,
+        "n_test_sig": 2185,
+        "n_test_bg": 5532
+      },
+      "mag_key_matched": "peakmag_i_d30",
+      "mag_key_snapshot": "i_d30"
+    },
+    "60.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.3040977743339154,
+        "tpr_at_fpr05": 0.29701890346675364,
+        "auc": 0.804029300447481,
+        "n_test_sig": 1071,
+        "n_test_bg": 3412
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.6107891425769366,
+        "tpr_at_fpr05": 0.2695988236212144,
+        "auc": 0.8187721455173295,
+        "n_test_sig": 1071,
+        "n_test_bg": 3412
+      },
+      "mag_key_matched": "peakmag_i_d60",
+      "mag_key_snapshot": "i_d60"
+    }
+  },
+  "iz": {
+    "0.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.4445695166202229,
+        "tpr_at_fpr05": 0.2684141945077448,
+        "auc": 0.7408130618563386,
+        "n_test_sig": 3577,
+        "n_test_bg": 6762
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.4445695166202229,
+        "tpr_at_fpr05": 0.2684141945077448,
+        "auc": 0.7408130618563386,
+        "n_test_sig": 3577,
+        "n_test_bg": 6762
+      },
+      "mag_key_matched": "peakmag_z_d0",
+      "mag_key_snapshot": "z_d0"
+    },
+    "3.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.4072439754165018,
+        "tpr_at_fpr05": 0.2437421174718698,
+        "auc": 0.7399921839780952,
+        "n_test_sig": 4433,
+        "n_test_bg": 8708
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.3958530685075243,
+        "tpr_at_fpr05": 0.24624571321687153,
+        "auc": 0.733478120502606,
+        "n_test_sig": 4433,
+        "n_test_bg": 8708
+      },
+      "mag_key_matched": "peakmag_z_d3",
+      "mag_key_snapshot": "z_d3"
+    },
+    "14.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.6228806836942089,
+        "tpr_at_fpr05": 0.43661600912027354,
+        "auc": 0.8172608751176781,
+        "n_test_sig": 3045,
+        "n_test_bg": 6458
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.6485470767299367,
+        "tpr_at_fpr05": 0.3630723956568227,
+        "auc": 0.813892652160051,
+        "n_test_sig": 3045,
+        "n_test_bg": 6458
+      },
+      "mag_key_matched": "peakmag_z_d14",
+      "mag_key_snapshot": "z_d14"
+    },
+    "30.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.4434559687801509,
+        "tpr_at_fpr05": 0.3911384022770842,
+        "auc": 0.7604969404056277,
+        "n_test_sig": 3041,
+        "n_test_bg": 5917
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.46955042050678614,
+        "tpr_at_fpr05": 0.38698195873099517,
+        "auc": 0.7363089018818397,
+        "n_test_sig": 3041,
+        "n_test_bg": 5917
+      },
+      "mag_key_matched": "peakmag_z_d30",
+      "mag_key_snapshot": "z_d30"
+    },
+    "60.0": {
+      "matched": {
+        "tpr_at_fpr10": 0.800106619501894,
+        "tpr_at_fpr05": 0.7189585094602118,
+        "auc": 0.9056581214217766,
+        "n_test_sig": 1473,
+        "n_test_bg": 3559
+      },
+      "snapshot": {
+        "tpr_at_fpr10": 0.7629280981067718,
+        "tpr_at_fpr05": 0.5846072305586972,
+        "auc": 0.9234381271748682,
+        "n_test_sig": 1473,
+        "n_test_bg": 3559
+      },
+      "mag_key_matched": "peakmag_z_d60",
+      "mag_key_snapshot": "z_d60"
+    }
+  }
+}
