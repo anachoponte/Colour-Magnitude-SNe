@@ -23,7 +23,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 echo "host=$(hostname)  pwd=$(pwd)  commit=$(git rev-parse --short HEAD 2>/dev/null || echo ?)"
 
 DATA_DIR="${1:-results/dual_59297152}"
-OUT_DIR="${2:-results/figures_purity_investigation}"
+OUT_DIR="${2:-docs/figures/purity_investigation}"
 
 echo "Running Purity & Sweet Spot Investigation on $DATA_DIR..."
 python -u scripts/investigate_purity_tradeoff.py --data-dir "$DATA_DIR" --out-dir "$OUT_DIR" --target all_lensed

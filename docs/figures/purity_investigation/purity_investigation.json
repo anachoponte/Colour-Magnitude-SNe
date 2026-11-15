@@ -2,44 +2,221 @@
   "signal_label": "lensed Ia",
   "N_sig_annual": 10.0,
   "N_bg_annual": 100000.0,
-  "pure_sweet_spot": {
-    "max_bg_score": 0.9975346128333566,
-    "pure_tpr": 0.0562999045084018,
-    "pure_annual_tp": 0.562999045084018,
-    "pure_events_count": 1354
-  },
-  "operating_points": [
-    {
-      "name": "10% FPR (Standard Broker)",
-      "target_fpr": 0.1,
-      "achieved_fpr": 0.10292519106122079,
-      "achieved_tpr": 0.7803303437289283,
-      "annual_tp": 7.803303437289283,
-      "annual_fp": 10292.51910612208
+  "by_decision_epoch": {
+    "0d": {
+      "pure_tpr": 0.0004024603555141488,
+      "pure_annual_tp": 0.004024603555141488,
+      "max_bg_score": 0.9666142197155299,
+      "operating_points": [
+        {
+          "name": "10% FPR (Standard Broker)",
+          "target_fpr": 0.1,
+          "achieved_fpr": 0.09994270634270976,
+          "achieved_tpr": 0.3866557379226722,
+          "annual_tp": 3.8665573792267223,
+          "annual_fp": 9994.270634270975,
+          "purity_pct": 0.038672777789604866
+        },
+        {
+          "name": "1% FPR (Low Contamination)",
+          "target_fpr": 0.01,
+          "achieved_fpr": 0.009993414514882174,
+          "achieved_tpr": 0.15665989879929546,
+          "annual_tp": 1.5665989879929545,
+          "annual_fp": 999.3414514882174,
+          "purity_pct": 0.15651777276120424
+        },
+        {
+          "name": "0.1% FPR (Strict Filter)",
+          "target_fpr": 0.001,
+          "achieved_fpr": 0.0011313526627452631,
+          "achieved_tpr": 0.050832273162337384,
+          "annual_tp": 0.5083227316233738,
+          "annual_fp": 113.13526627452632,
+          "purity_pct": 0.44729556332110076
+        },
+        {
+          "name": "0.01% FPR (Spectroscopic Candidate)",
+          "target_fpr": 0.0001,
+          "achieved_fpr": 1.981314507283718e-05,
+          "achieved_tpr": 0.032673764619393204,
+          "annual_tp": 0.32673764619393203,
+          "annual_fp": 1.9813145072837182,
+          "purity_pct": 14.156423878967427
+        }
+      ]
     },
-    {
-      "name": "1% FPR (Low Contamination)",
-      "target_fpr": 0.01,
-      "achieved_fpr": 0.009973478409958656,
-      "achieved_tpr": 0.4362224264355573,
-      "annual_tp": 4.362224264355573,
-      "annual_fp": 997.3478409958657
+    "3d": {
+      "pure_tpr": 0.00484640233556568,
+      "pure_annual_tp": 0.0484640233556568,
+      "max_bg_score": 0.9995642406323293,
+      "operating_points": [
+        {
+          "name": "10% FPR (Standard Broker)",
+          "target_fpr": 0.1,
+          "achieved_fpr": 0.0999185823152145,
+          "achieved_tpr": 0.5039967978935174,
+          "annual_tp": 5.039967978935174,
+          "annual_fp": 9991.85823152145,
+          "purity_pct": 0.050415317615088405
+        },
+        {
+          "name": "1% FPR (Low Contamination)",
+          "target_fpr": 0.01,
+          "achieved_fpr": 0.00959606798585256,
+          "achieved_tpr": 0.26663259606018175,
+          "annual_tp": 2.6663259606018173,
+          "annual_fp": 959.6067985852561,
+          "purity_pct": 0.2770861923282106
+        },
+        {
+          "name": "0.1% FPR (Strict Filter)",
+          "target_fpr": 0.001,
+          "achieved_fpr": 0.0009935296758070353,
+          "achieved_tpr": 0.048455673733031675,
+          "annual_tp": 0.48455673733031673,
+          "annual_fp": 99.35296758070352,
+          "purity_pct": 0.48534530542519705
+        },
+        {
+          "name": "0.01% FPR (Spectroscopic Candidate)",
+          "target_fpr": 0.0001,
+          "achieved_fpr": 0.0001643165277886103,
+          "achieved_tpr": 0.010077704508027144,
+          "annual_tp": 0.10077704508027144,
+          "annual_fp": 16.431652778861032,
+          "purity_pct": 0.6095718908440911
+        }
+      ]
     },
-    {
-      "name": "0.1% FPR (Strict Filter)",
-      "target_fpr": 0.001,
-      "achieved_fpr": 0.0013305901146652894,
-      "achieved_tpr": 0.1895008577681296,
-      "annual_tp": 1.8950085776812962,
-      "annual_fp": 133.05901146652894
+    "14d": {
+      "pure_tpr": 0.04608610275393696,
+      "pure_annual_tp": 0.4608610275393696,
+      "max_bg_score": 0.9985757196335853,
+      "operating_points": [
+        {
+          "name": "10% FPR (Standard Broker)",
+          "target_fpr": 0.1,
+          "achieved_fpr": 0.10002414959228006,
+          "achieved_tpr": 0.590843729852904,
+          "annual_tp": 5.90843729852904,
+          "annual_fp": 10002.414959228006,
+          "purity_pct": 0.05903523561778197
+        },
+        {
+          "name": "1% FPR (Low Contamination)",
+          "target_fpr": 0.01,
+          "achieved_fpr": 0.010135700128898459,
+          "achieved_tpr": 0.32627951607101346,
+          "annual_tp": 3.2627951607101346,
+          "annual_fp": 1013.5700128898459,
+          "purity_pct": 0.32087823434468804
+        },
+        {
+          "name": "0.1% FPR (Strict Filter)",
+          "target_fpr": 0.001,
+          "achieved_fpr": 0.0006611930106453302,
+          "achieved_tpr": 0.07271110251347515,
+          "annual_tp": 0.7271110251347515,
+          "annual_fp": 66.11930106453302,
+          "purity_pct": 1.0877338100950051
+        },
+        {
+          "name": "0.01% FPR (Spectroscopic Candidate)",
+          "target_fpr": 0.0001,
+          "achieved_fpr": 7.797554640121615e-06,
+          "achieved_tpr": 0.057132626048258486,
+          "annual_tp": 0.5713262604825848,
+          "annual_fp": 0.7797554640121614,
+          "purity_pct": 42.286580458057735
+        }
+      ]
     },
-    {
-      "name": "0.01% FPR (Spectroscopic Candidate)",
-      "target_fpr": 0.0001,
-      "achieved_fpr": 7.426567077597515e-05,
-      "achieved_tpr": 0.15283615930787667,
-      "annual_tp": 1.5283615930787666,
-      "annual_fp": 7.426567077597515
+    "30d": {
+      "pure_tpr": 0.08114866912995622,
+      "pure_annual_tp": 0.8114866912995622,
+      "max_bg_score": 0.9978670406625599,
+      "operating_points": [
+        {
+          "name": "10% FPR (Standard Broker)",
+          "target_fpr": 0.1,
+          "achieved_fpr": 0.10009082530430444,
+          "achieved_tpr": 0.7528236821382512,
+          "annual_tp": 7.528236821382512,
+          "annual_fp": 10009.082530430444,
+          "purity_pct": 0.0751575257970014
+        },
+        {
+          "name": "1% FPR (Low Contamination)",
+          "target_fpr": 0.01,
+          "achieved_fpr": 0.009979675717545999,
+          "achieved_tpr": 0.44659158138840394,
+          "annual_tp": 4.465915813884039,
+          "annual_fp": 997.9675717545998,
+          "purity_pct": 0.4455074445603992
+        },
+        {
+          "name": "0.1% FPR (Strict Filter)",
+          "target_fpr": 0.001,
+          "achieved_fpr": 0.0004643382269356203,
+          "achieved_tpr": 0.16265281081603658,
+          "annual_tp": 1.6265281081603657,
+          "annual_fp": 46.43382269356203,
+          "purity_pct": 3.3843450599658835
+        },
+        {
+          "name": "0.01% FPR (Spectroscopic Candidate)",
+          "target_fpr": 0.0001,
+          "achieved_fpr": 7.797554640121633e-06,
+          "achieved_tpr": 0.1000719726023806,
+          "annual_tp": 1.000719726023806,
+          "annual_fp": 0.7797554640121633,
+          "purity_pct": 56.20520474669403
+        }
+      ]
+    },
+    "60d": {
+      "pure_tpr": 0.0562999045084018,
+      "pure_annual_tp": 0.562999045084018,
+      "max_bg_score": 0.9975346128333566,
+      "operating_points": [
+        {
+          "name": "10% FPR (Standard Broker)",
+          "target_fpr": 0.1,
+          "achieved_fpr": 0.10292519106122079,
+          "achieved_tpr": 0.7803303437289283,
+          "annual_tp": 7.803303437289283,
+          "annual_fp": 10292.51910612208,
+          "purity_pct": 0.07575785618173767
+        },
+        {
+          "name": "1% FPR (Low Contamination)",
+          "target_fpr": 0.01,
+          "achieved_fpr": 0.009973478409958656,
+          "achieved_tpr": 0.4362224264355573,
+          "annual_tp": 4.362224264355573,
+          "annual_fp": 997.3478409958657,
+          "purity_pct": 0.4354777310960101
+        },
+        {
+          "name": "0.1% FPR (Strict Filter)",
+          "target_fpr": 0.001,
+          "achieved_fpr": 0.0013305901146652894,
+          "achieved_tpr": 0.1895008577681296,
+          "annual_tp": 1.8950085776812962,
+          "annual_fp": 133.05901146652894,
+          "purity_pct": 1.4041883132199406
+        },
+        {
+          "name": "0.01% FPR (Spectroscopic Candidate)",
+          "target_fpr": 0.0001,
+          "achieved_fpr": 7.426567077597515e-05,
+          "achieved_tpr": 0.15283615930787667,
+          "annual_tp": 1.5283615930787666,
+          "annual_fp": 7.426567077597515,
+          "purity_pct": 17.06726708034564
+        }
+      ]
     }
-  ]
+  }
 }
