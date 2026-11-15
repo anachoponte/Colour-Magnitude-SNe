@@ -22,11 +22,32 @@ KDE_RANGE_CHECK_DRAWS = 2000
 
 
 def effective_sample_size(weights):
-    """Kish's ESS: (sum w)^2 / sum(w^2). 0.0 for empty or non-positive input."""
+    """Kish's ESS: (sum w)^2 / sum(w^2). 0.0 for empty or non-positive input.
+
+    Normalizes by the largest absolute weight before squaring -- ESS is
+    scale-invariant (``ESS(c*w) == ESS(w)`` for any ``c != 0``), so this is
+    mathematically identical to the naive formula for any well-conditioned
+    input, but avoids ``w ** 2`` overflowing to ``inf`` (then ``inf / inf``
+    -> ``NaN``) when real rate weights span extreme dynamic range -- e.g.
+    after :func:`cmsne.classifier._weighted_subsample`'s own mass-rescaling
+    draws a sample whose total is many orders of magnitude below the full
+    population's, the rescaled weights can individually be large enough that
+    squaring them overflows even though neither the weights nor their sum
+    alone would (see issue #50: this crashed ``roc_curve()``'s finite-value
+    check the first time ``score()`` ran the local-density blend widely
+    enough, across thousands of distinct missing-data patterns, to hit it).
+    """
     w = np.asarray(weights, dtype=float)
     if w.size == 0 or not np.any(w > 0):
         return 0.0
-    return float(w.sum() ** 2 / np.sum(w ** 2))
+    scale = np.max(np.abs(w))
+    if not np.isfinite(scale) or scale <= 0:
+        return 0.0
+    wn = w / scale
+    denom = np.sum(wn ** 2)
+    if denom <= 0 or not np.isfinite(denom):
+        return 0.0
+    return float(wn.sum() ** 2 / denom)
 
 
 def diagnose_sparse_cells(events, weights, band_pair_keys=BAND_PAIR_KEYS,

@@ -16,6 +16,7 @@ expose ``lensed_colour`` and ``band_1_mag_l``.
 """
 
 import hashlib
+from collections import OrderedDict
 from typing import NamedTuple
 
 import numpy as np
@@ -49,11 +50,35 @@ DEFAULT_ESS_THRESHOLD = 10.0
 DEFAULT_LOG_WIDTH = 0.3
 DEFAULT_KDE_MAX_EVENTS = 4000
 DEFAULT_KDE_MIN_ESS = 10.0
+# Bounds how many distinct missing-data patterns' KDE reference subsets
+# (see _kde_subset_for_pattern) stay cached at once, evicting the
+# least-recently-used pattern beyond this -- a real survey population can
+# have thousands of distinct patterns (see issue #50), so an unbounded cache
+# risks unbounded memory on a large batch that sweeps many of them.
+DEFAULT_KDE_PATTERN_CACHE_SIZE = 256
 # Uncertainty-aware noise injection (see docs/superpowers/specs/
 # 2026-10-26-uncertainty-aware-noise-injection-design.md). Provisional, like
 # the other blend constants above -- tuned against real data in this plan's
 # own Manual Validation step.
 DEFAULT_N_UNCERTAINTY_REPLICATES = 8
+# Noise-injection replicate count for the LOCAL-DENSITY BLEND specifically
+# (the KDE reference-set build in _kde_subset_for_pattern, and the per-query
+# replication in _blend_with_local_density) -- deliberately DECOUPLED from
+# DEFAULT_N_UNCERTAINTY_REPLICATES, which still governs the TREE's own
+# training/scoring replication unchanged. Profiling (issue #50) found
+# _replicate_with_uncertainty's per-row seeding dominates the blend's cost
+# (>80% of runtime) because a real survey population can have thousands of
+# distinct missing-data patterns, each requiring its own fresh reference-set
+# replication; on real production data, skipping it entirely (effectively
+# this constant) still correlates 0.927 with the fully-replicated blend's
+# behaviour (mean |difference| 0.048) at a measured 30x speedup. This trades
+# away some of the fine-grained smearing issue #37 fixed for one specific
+# single-exact-match-point scenario, in exchange for the blend being
+# tractable to run at all at production scale -- not a free upgrade, a
+# deliberate, measured trade-off. Provisional, like the other blend constants
+# above; raise it (up to DEFAULT_N_UNCERTAINTY_REPLICATES) for small-batch/
+# visualization use where the extra cost doesn't matter.
+DEFAULT_KDE_N_UNCERTAINTY_REPLICATES = 1
 
 
 def colour_feature_matrix(events, keys=COLOUR_KEYS, extra=(DEFAULT_MAGNITUDE_FEATURE,)):
@@ -461,7 +486,23 @@ def _weighted_subsample(X, weights, max_events, seed=0):
     p = weights[positive] / wsum
     rng = np.random.default_rng(seed)
     chosen = rng.choice(positive, size=max_events, replace=False, p=p)
-    kept_w = weights[chosen] * (wsum / weights[chosen].sum())
+    chosen_sum = weights[chosen].sum()
+    if chosen_sum > 0 and np.isfinite(chosen_sum):
+        kept_w = weights[chosen] * (wsum / chosen_sum)
+    else:
+        # chosen_sum can underflow to exactly 0.0 when every sampled row's
+        # weight is individually minuscule -- real rate weights span many
+        # orders of magnitude, including extreme Monte Carlo tail draws (see
+        # issue #50). Rescaling by wsum/chosen_sum would then divide by
+        # zero, producing inf weights that poison effective_sample_size
+        # (inf/inf -> NaN), which crashed roc_curve's finite-value check the
+        # first time score() ran the local-density blend at full production
+        # scale (thousands of distinct missing-data patterns, some landing
+        # on this underflow). Falling back to the UNRESCALED weights trades
+        # exact total-mass preservation (not meaningful here anyway -- the
+        # chosen weights are too small relative to float64 to represent
+        # their own sum) for a finite, usable result.
+        kept_w = weights[chosen]
     return X[chosen], kept_w, chosen
 
 
@@ -505,6 +546,16 @@ class ColourClassifier:
     :param calibrate: wrap the tree in isotonic probability calibration so
         :meth:`probability` returns a well-behaved posterior (at the balanced
         training prior) rather than a raw, uncalibrated tree score.
+    :param kde_pattern_cache_size: maximum number of distinct missing-data
+        patterns' KDE reference subsets kept cached at once (least-recently-
+        used eviction beyond this) -- bounds :meth:`score`'s memory use on
+        real survey populations with many distinct patterns (see issue #50).
+    :param kde_n_uncertainty_replicates: noise-injection replicate count for
+        the local-density blend specifically, decoupled from
+        ``n_uncertainty_replicates`` (which still governs the tree's own
+        training/scoring) -- see :data:`DEFAULT_KDE_N_UNCERTAINTY_REPLICATES`
+        for why this defaults low (a measured cost/fidelity trade-off, issue
+        #50).
     :param hgb: extra keyword args forwarded to ``HistGradientBoostingClassifier``.
     """
 
@@ -513,6 +564,8 @@ class ColourClassifier:
                  calibrate=True, ess_threshold=DEFAULT_ESS_THRESHOLD,
                  log_width=DEFAULT_LOG_WIDTH, kde_max_events=DEFAULT_KDE_MAX_EVENTS,
                  kde_min_ess=DEFAULT_KDE_MIN_ESS,
+                 kde_pattern_cache_size=DEFAULT_KDE_PATTERN_CACHE_SIZE,
+                 kde_n_uncertainty_replicates=DEFAULT_KDE_N_UNCERTAINTY_REPLICATES,
                  n_uncertainty_replicates=DEFAULT_N_UNCERTAINTY_REPLICATES, **hgb):
         self.keys = list(keys)
         if include_peakmag and magnitude_feature:
@@ -537,6 +590,8 @@ class ColourClassifier:
         self.log_width = log_width
         self.kde_max_events = kde_max_events
         self.kde_min_ess = kde_min_ess
+        self.kde_pattern_cache_size = kde_pattern_cache_size
+        self.kde_n_uncertainty_replicates = kde_n_uncertainty_replicates
         self.n_uncertainty_replicates = n_uncertainty_replicates
         # Column-name groups (e.g. a cumulative-best magnitude's grid-step
         # sequence) that must stay non-increasing per noise-injection replica
@@ -682,6 +737,12 @@ class ColourClassifier:
         else:
             self.clf = base.fit(X, y, sample_weight=w)
 
+        # Local KDE training data (and the pattern cache score() now needs --
+        # see issue #50) must exist BEFORE the threshold-setting score() call
+        # just below, since score() itself now blends in the local-density
+        # ratio.
+        self._store_kde_training_data(Xs, ws, Xb, wb, sigma_s, sigma_b)
+
         # Threshold-setting calibrates against self.score() -- the SAME quantity
         # predict()/recovery_rate()/roc_curve() compare it to downstream. Using
         # raw self.clf.predict_proba(Xb) here instead (an earlier revision's
@@ -694,7 +755,6 @@ class ColourClassifier:
         # this is a true no-op in that case.
         sb = self.score(background_events)
         self.threshold = float(weighted_quantile(sb, wb, q=1.0 - self.target_fpr))
-        self._store_kde_training_data(Xs, ws, Xb, wb, sigma_s, sigma_b)
         return self
 
     def _store_kde_training_data(self, Xs, ws, Xb, wb, sigma_s, sigma_b):
@@ -736,13 +796,13 @@ class ColourClassifier:
         pooled_X = np.vstack([self._kde_Xs, self._kde_Xb])
         pooled_w = np.r_[self._kde_ws, self._kde_wb]
         self._kde_bandwidths = _scott_bandwidths(pooled_X, pooled_w)
-        self._kde_pattern_cache = {}
+        self._kde_pattern_cache = OrderedDict()
 
-    def score(self, events):
-        """Raw ranking score (calibrated posterior at the balanced training prior).
-
-        Monotonic with :meth:`probability`, so it gives the same ordering; use it
-        when you only need to rank.
+    def _tree_score(self, events):
+        """Raw calibrated tree posterior (at the balanced training prior),
+        with NO local-density blend applied -- the tree-only building block
+        :meth:`score` blends on top of. Not itself the recommended output;
+        see :meth:`score`.
 
         Each query event is noise-injection-replicated from its OWN ``*_err``
         fields (if present) and the tree's predictions are averaged back to one
@@ -763,22 +823,47 @@ class ColourClassifier:
         sums = np.bincount(event_id, weights=p_rep, minlength=len(X))
         return sums / counts
 
+    def score(self, events):
+        """Ranking score: the calibrated tree posterior, blended with the
+        local KDE density ratio wherever the tree's own local support is
+        thin (see :meth:`_blend_with_local_density`) -- at the balanced
+        training prior.
+
+        Monotonic with :meth:`probability`, so it gives the same ordering; use it
+        when you only need to rank.
+
+        This is also the quantity every operational consumer compares against
+        (:meth:`predict`'s threshold, :meth:`recovery_rate`, :meth:`roc_curve`,
+        :meth:`fit`'s own threshold-setting) -- it used to be the tree-only
+        posterior (see :meth:`_tree_score`), with the KDE blend applied only in
+        :meth:`probability`. That let an event scored by the raw tree alone
+        report near-full confidence despite little real local support, with no
+        way for any of those operational consumers to see or correct it (see
+        issue #50): a sparse, partially-observed light curve could clear a
+        purity-pinned operating-point threshold exactly as readily as a fully-
+        observed one, because the one safeguard that would have caught it
+        (this same density blend) was applied only in :meth:`probability`,
+        which none of those consumers called.
+        """
+        p_tree = np.clip(self._tree_score(events), 1e-12, 1 - 1e-12)
+        return self._blend_with_local_density(events, p_tree)
+
     def probability(self, events, prior=None):
         """Posterior probability P(lensed SN Ia) for each event.
 
         The boundary is a gradient, not a line — this is the recommended output.
-        With ``prior=None`` it returns the calibrated posterior at the balanced
-        training prior (good for ranking and for reading off "how lensed-like").
-        Pass the **true** lensed-SN-Ia prior (e.g. ``1e-3``) to get the honest
-        posterior for a real stream, which correctly comes out small — see the
-        base-rate discussion in the results write-up.
+        With ``prior=None`` it returns :meth:`score`'s own calibrated posterior
+        at the balanced training prior unchanged (good for ranking and for
+        reading off "how lensed-like"). Pass the **true** lensed-SN-Ia prior
+        (e.g. ``1e-3``) to get the honest posterior for a real stream, which
+        correctly comes out small — see the base-rate discussion in the
+        results write-up.
 
         :param prior: true fraction of lensed SN Ia among the transients scored, or
             ``None`` to keep the training prior.
         :return: array of probabilities in [0, 1].
         """
-        p_tree = np.clip(self.score(events), 1e-12, 1 - 1e-12)
-        p = self._blend_with_local_density(events, p_tree)
+        p = np.clip(self.score(events), 1e-12, 1 - 1e-12)
         if prior is None:
             return p
         p0 = self.train_prior
@@ -796,12 +881,14 @@ class ColourClassifier:
         feature columns for that event).
 
         Each query event is ALSO noise-injection-replicated from its own
-        ``*_err`` fields (if present), and the blended result is averaged
-        back over those replicas -- symmetric with how training data is
-        handled (see docs/superpowers/specs/
+        ``*_err`` fields (if present), using ``kde_n_uncertainty_replicates``
+        -- DECOUPLED from the tree's own ``n_uncertainty_replicates`` (see
+        :data:`DEFAULT_KDE_N_UNCERTAINTY_REPLICATES`, issue #50) -- and the
+        blended result is averaged back over those replicas, symmetric with
+        how training data is handled (see docs/superpowers/specs/
         2026-10-26-uncertainty-aware-noise-injection-design.md). ``p_tree``
-        arrives already averaged over its own replicas (see
-        :meth:`score`); only the KDE-side evaluation is repeated here.
+        arrives already averaged over its own (tree-side) replicas (see
+        :meth:`_tree_score`); only the KDE-side evaluation is repeated here.
         """
         X, _ = colour_feature_matrix(events, self.keys, self.extra)
         sigma = colour_feature_sigma_matrix(events, self.keys, self.extra)
@@ -816,7 +903,7 @@ class ColourClassifier:
             subset = self._kde_subset_for_pattern(pattern, dims)
             x_rep, _, _ = _replicate_with_uncertainty(
                 x[np.newaxis, :], sigma[i][np.newaxis, :], np.array([1.0]),
-                dims, self.n_uncertainty_replicates, monotonic_groups=monotonic_groups)
+                dims, self.kde_n_uncertainty_replicates, monotonic_groups=monotonic_groups)
             blended_vals = []
             for xr in x_rep:
                 p_kde, ess_sig, ess_bg = _local_density_ratio(
@@ -835,9 +922,15 @@ class ColourClassifier:
     def _kde_subset_for_pattern(self, pattern, dims):
         """Training rows finite over ``dims``, weighted-subsampled to at
         most ``kde_max_events`` (independently per class), then
-        noise-injection-replicated from each surviving event's own
-        measurement uncertainty -- cached per ``pattern`` on this instance
-        (reset by :meth:`fit`) as a :class:`_KDEPatternSubset`.
+        noise-injection-replicated (``kde_n_uncertainty_replicates`` times --
+        DECOUPLED from the tree's own ``n_uncertainty_replicates``, see
+        :data:`DEFAULT_KDE_N_UNCERTAINTY_REPLICATES`, issue #50) from each
+        surviving event's own measurement uncertainty -- cached per
+        ``pattern`` on this instance (reset by :meth:`fit`) as a
+        :class:`_KDEPatternSubset`, with least-recently-used eviction beyond
+        ``kde_pattern_cache_size`` distinct patterns (a real survey
+        population can have thousands of them; with no cap, scoring a batch
+        that sweeps many of them grows this cache without bound).
 
         Subsampling happens HERE, after the finite-row filter, not in
         :meth:`_store_kde_training_data` -- so the ``kde_max_events`` budget
@@ -851,33 +944,38 @@ class ColourClassifier:
         replicating a point into K pieces must not make its own class look
         like it has K times more statistical support.
         """
-        if pattern not in self._kde_pattern_cache:
-            # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
-            from .importance_sampling import effective_sample_size
+        if pattern in self._kde_pattern_cache:
+            self._kde_pattern_cache.move_to_end(pattern)
+            return self._kde_pattern_cache[pattern]
 
-            finite_s = np.all(np.isfinite(self._kde_Xs[:, dims]), axis=1)
-            finite_b = np.all(np.isfinite(self._kde_Xb[:, dims]), axis=1)
-            finite_s_idx = np.where(finite_s)[0]
-            finite_b_idx = np.where(finite_b)[0]
-            Xs_cap, ws_cap, chosen_s = _weighted_subsample(
-                self._kde_Xs[finite_s], self._kde_ws[finite_s], self.kde_max_events)
-            Xb_cap, wb_cap, chosen_b = _weighted_subsample(
-                self._kde_Xb[finite_b], self._kde_wb[finite_b], self.kde_max_events)
-            sigma_s_cap = self._kde_sigma_s[finite_s_idx[chosen_s]]
-            sigma_b_cap = self._kde_sigma_b[finite_b_idx[chosen_b]]
+        # Local import: importance_sampling -> contours -> classifier would be a cycle at module load.
+        from .importance_sampling import effective_sample_size
 
-            monotonic_groups = self._resolve_monotonic_groups()
-            Xs_rep, ws_rep, event_id_s = _replicate_with_uncertainty(
-                Xs_cap, sigma_s_cap, ws_cap, dims, self.n_uncertainty_replicates,
-                monotonic_groups=monotonic_groups)
-            Xb_rep, wb_rep, event_id_b = _replicate_with_uncertainty(
-                Xb_cap, sigma_b_cap, wb_cap, dims, self.n_uncertainty_replicates,
-                monotonic_groups=monotonic_groups)
+        finite_s = np.all(np.isfinite(self._kde_Xs[:, dims]), axis=1)
+        finite_b = np.all(np.isfinite(self._kde_Xb[:, dims]), axis=1)
+        finite_s_idx = np.where(finite_s)[0]
+        finite_b_idx = np.where(finite_b)[0]
+        Xs_cap, ws_cap, chosen_s = _weighted_subsample(
+            self._kde_Xs[finite_s], self._kde_ws[finite_s], self.kde_max_events)
+        Xb_cap, wb_cap, chosen_b = _weighted_subsample(
+            self._kde_Xb[finite_b], self._kde_wb[finite_b], self.kde_max_events)
+        sigma_s_cap = self._kde_sigma_s[finite_s_idx[chosen_s]]
+        sigma_b_cap = self._kde_sigma_b[finite_b_idx[chosen_b]]
 
-            self._kde_pattern_cache[pattern] = _KDEPatternSubset(
-                Xs_rep, ws_rep, Xb_rep, wb_rep,
-                effective_sample_size(ws_cap), effective_sample_size(wb_cap),
-                event_id_s, event_id_b, len(Xs_cap), len(Xb_cap))
+        monotonic_groups = self._resolve_monotonic_groups()
+        Xs_rep, ws_rep, event_id_s = _replicate_with_uncertainty(
+            Xs_cap, sigma_s_cap, ws_cap, dims, self.kde_n_uncertainty_replicates,
+            monotonic_groups=monotonic_groups)
+        Xb_rep, wb_rep, event_id_b = _replicate_with_uncertainty(
+            Xb_cap, sigma_b_cap, wb_cap, dims, self.kde_n_uncertainty_replicates,
+            monotonic_groups=monotonic_groups)
+
+        self._kde_pattern_cache[pattern] = _KDEPatternSubset(
+            Xs_rep, ws_rep, Xb_rep, wb_rep,
+            effective_sample_size(ws_cap), effective_sample_size(wb_cap),
+            event_id_s, event_id_b, len(Xs_cap), len(Xb_cap))
+        if len(self._kde_pattern_cache) > self.kde_pattern_cache_size:
+            self._kde_pattern_cache.popitem(last=False)
         return self._kde_pattern_cache[pattern]
 
     def rank(self, events):

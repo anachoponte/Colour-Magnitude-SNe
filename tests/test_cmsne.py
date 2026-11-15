@@ -1474,8 +1474,8 @@ _clf_dense = ColourClassifier(keys=['gr'], include_peakmag=True)
 _clf_dense.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
 _dense_pts = [{'gr': 1.0, 'peakmag': 22.0}, {'gr': 1.1, 'peakmag': 21.7}]
 _dense_blended = _clf_dense.probability(_dense_pts)
-_dense_tree_only = np.clip(_clf_dense.score(_dense_pts), 1e-12, 1 - 1e-12)
-check('dense region: blended probability() matches tree-only score() closely',
+_dense_tree_only = np.clip(_clf_dense._tree_score(_dense_pts), 1e-12, 1 - 1e-12)
+check('dense region: blended probability() matches raw tree-only _tree_score() closely',
       np.allclose(_dense_blended, _dense_tree_only, atol=1e-3),
       (_dense_blended, _dense_tree_only))
 
@@ -1496,18 +1496,21 @@ _clf_sparse = ColourClassifier(keys=['gr'], include_peakmag=True)
 _clf_sparse.fit(_sparse_sig, _sparse_bg, _sparse_sw, _sparse_bw)
 _corner_pt = [{'gr': 4.0, 'peakmag': 16.0}]
 _corner_blended = _clf_sparse.probability(_corner_pt)[0]
-_corner_tree_only = np.clip(_clf_sparse.score(_corner_pt), 1e-12, 1 - 1e-12)[0]
-check('sparse corner: blended probability() is materially higher than tree-only score()',
+_corner_tree_only = np.clip(_clf_sparse._tree_score(_corner_pt), 1e-12, 1 - 1e-12)[0]
+check('sparse corner: blended probability() is materially higher than raw tree-only _tree_score()',
       _corner_blended > _corner_tree_only + 0.05,
       (_corner_blended, _corner_tree_only))
 check('sparse corner: blended probability() is clearly above the balanced-prior midpoint',
       _corner_blended > 0.7, _corner_blended)
+check('score() (now itself blended, see issue #50) agrees with probability() at the '
+      'training prior -- probability() with prior=None is just a thin clip over score()',
+      np.isclose(_clf_sparse.score(_corner_pt)[0], _corner_blended))
 
 # No finite feature columns at all -> falls back to p_tree unchanged.
 _nan_pt = [{'gr': np.nan, 'peakmag': np.nan}]
 _nan_blended = _clf_dense.probability(_nan_pt)
-_nan_tree_only = np.clip(_clf_dense.score(_nan_pt), 1e-12, 1 - 1e-12)
-check('event with no finite columns falls back to tree-only probability unchanged',
+_nan_tree_only = np.clip(_clf_dense._tree_score(_nan_pt), 1e-12, 1 - 1e-12)
+check('event with no finite columns falls back to raw tree-only probability unchanged',
       np.allclose(_nan_blended, _nan_tree_only))
 
 # Two distinct finite-column patterns in the same call.
@@ -1551,10 +1554,27 @@ _tc = TrajectoryClassifier()
 _tc.fit(_tc_sig, _tc_bg, np.full(len(_tc_sig), 1e-5), np.full(_n_sparse, 1e-5))
 _tc_corner_pt = [_tc_event(4.0, 16.0)]
 _tc_corner_blended = _tc.probability(_tc_corner_pt)[0]
-_tc_corner_tree_only = np.clip(_tc.score(_tc_corner_pt), 1e-12, 1 - 1e-12)[0]
+_tc_corner_tree_only = np.clip(_tc._tree_score(_tc_corner_pt), 1e-12, 1 - 1e-12)[0]
 check('TrajectoryClassifier inherits the sparse-corner blend with no extra code',
       _tc_corner_blended > _tc_corner_tree_only + 0.05,
       (_tc_corner_blended, _tc_corner_tree_only))
+
+print('\n=== score() now includes the local-density blend (issue #50) ===')
+# issue #50: the OPERATIONAL pipeline (predict()'s threshold, recovery_rate(),
+# roc_curve(), fit()'s own threshold-setting) all compare against score(),
+# never probability() -- so a sparse, thinly-supported event could clear a
+# purity-pinned operating point exactly as readily as a densely-supported one,
+# because the one safeguard that would have caught it (the local-density
+# blend) lived only in probability(), which none of those consumers called.
+check("score() on the sparse-corner query now matches probability()'s locally-blended "
+      'value, not the raw tree-only _tree_score() -- the operational pipeline inherits '
+      'the exact safeguard that used to be probability()-only',
+      np.isclose(_clf_sparse.score(_corner_pt)[0], _corner_blended) and
+      _clf_sparse.score(_corner_pt)[0] > _corner_tree_only + 0.05,
+      (_clf_sparse.score(_corner_pt)[0], _corner_tree_only))
+check('predict() (built on the now-blended score()) is consistent with that same '
+      'blended value crossing the fitted threshold',
+      bool(_clf_sparse.predict(_corner_pt)[0]) == bool(_clf_sparse.score(_corner_pt)[0] >= _clf_sparse.threshold))
 
 
 print('\n=== uncertainty-aware noise injection: tree-side wiring ===')
@@ -1580,16 +1600,24 @@ check('a classifier trained with real uncertainty data produces a finite, calibr
 
 # With NO uncertainty data anywhere (training OR query -- reusing the
 # error-free _dense_sig/_dense_bg/_dense_sw/_dense_bw fixtures from the
-# "wired into ColourClassifier" section above), score() is numerically
-# identical to predict_proba directly: replication is a true no-op start to
-# finish, not just at the query.
+# "wired into ColourClassifier" section above), _tree_score() (the raw,
+# pre-blend building block -- see issue #50) is numerically identical to
+# predict_proba directly: replication is a true no-op start to finish, not
+# just at the query. score() ITSELF is no longer this exact quantity (it now
+# always includes the local-density blend -- see issue #50), but in this
+# dense, well-supported fixture that blend is a near no-op, so score() still
+# stays close to the same value.
 _clf_noerr = ColourClassifier(keys=['gr'], include_peakmag=True)
 _clf_noerr.fit(_dense_sig, _dense_bg, _dense_sw, _dense_bw)
 _X_direct, _ = colour_feature_matrix([{'gr': 1.1, 'peakmag': 22.0}], ['gr'], ('peakmag',))
-check('score() with no *_err data anywhere matches predict_proba directly '
+check('_tree_score() with no *_err data anywhere matches predict_proba directly '
       '(replication is a true no-op, training and query alike)',
-      np.isclose(_clf_noerr.score([{'gr': 1.1, 'peakmag': 22.0}])[0],
+      np.isclose(_clf_noerr._tree_score([{'gr': 1.1, 'peakmag': 22.0}])[0],
                  _clf_noerr.clf.predict_proba(_X_direct)[0, 1]))
+check('score() (now blended, see issue #50) stays close to _tree_score() in this '
+      'dense, well-supported region, where the blend is a near no-op',
+      np.isclose(_clf_noerr.score([{'gr': 1.1, 'peakmag': 22.0}])[0],
+                 _clf_noerr._tree_score([{'gr': 1.1, 'peakmag': 22.0}])[0], atol=1e-3))
 
 
 print('\n=== local density-ratio blend: backward compatibility and kde_max_events ===')
@@ -1612,8 +1640,8 @@ _clf_bc = ColourClassifier(keys=['gr'], include_peakmag=True)
 _clf_bc.fit(_bc_sig, _bc_bg, _bc_sw, _bc_bw)
 _bc_pts = [{'gr': 1.0, 'peakmag': 22.0}, {'gr': 1.1, 'peakmag': 21.5}, {'gr': 0.9, 'peakmag': 22.5}]
 _bc_blended = _clf_bc.probability(_bc_pts)
-_bc_tree_only = np.clip(_clf_bc.score(_bc_pts), 1e-12, 1 - 1e-12)
-check('production-shaped dense region: blended probability() unchanged from tree-only score()',
+_bc_tree_only = np.clip(_clf_bc._tree_score(_bc_pts), 1e-12, 1 - 1e-12)
+check('production-shaped dense region: blended probability() unchanged from raw tree-only _tree_score()',
       np.allclose(_bc_blended, _bc_tree_only, atol=1e-3), (_bc_blended, _bc_tree_only))
 
 # kde_max_events now caps each missing-data PATTERN's own subsample, lazily
@@ -1641,6 +1669,36 @@ _clf_nocap.fit(_cap_events, _cap_events, _cap_weights, _cap_weights)
 _subset_nocap = _clf_nocap._kde_subset_for_pattern((True,), np.array([0]))
 check('kde_max_events above the actual event count leaves the per-pattern subset untouched',
       _subset_nocap.Xs.shape[0] == np.sum(_cap_weights > 0), _subset_nocap.Xs.shape[0])
+
+print('\n=== effective_sample_size: extreme-dynamic-range overflow guard (issue #50) ===')
+# Real rate weights span many orders of magnitude (extreme Monte Carlo tail
+# draws included). _weighted_subsample's own mass-rescaling
+# (weights[chosen] * wsum / weights[chosen].sum()) can -- when the randomly
+# CHOSEN rows' total happens to sit many orders of magnitude below the full
+# population's -- produce individually huge (but still finite) rescaled
+# weights. Squaring those inside the naive (sum w)^2 / sum(w^2) formula then
+# overflows to inf, and inf / inf -> NaN. This crashed roc_curve()'s
+# finite-value check the first time score() ran the local-density blend at
+# full production scale (thousands of distinct missing-data patterns, one
+# landing on this pathology) -- reproduced here directly against
+# effective_sample_size with the same shape of pathological input.
+from cmsne.importance_sampling import effective_sample_size
+_w_overflow = np.full(50, 1e-4) * (1e-3 / 1e-300)   # same huge, finite rescale ratio
+check('fixture check: this weight array really does trigger float64 overflow under the '
+      'NAIVE (sum w)^2 / sum(w^2) formula -- otherwise this test is not exercising the '
+      'real pathology',
+      not np.isfinite(_w_overflow.sum() ** 2 / np.sum(_w_overflow ** 2)),
+      _w_overflow.sum() ** 2 / np.sum(_w_overflow ** 2))
+check('effective_sample_size stays finite on the same extreme-dynamic-range input '
+      '(scale-invariant renormalization avoids the overflow)',
+      np.isfinite(effective_sample_size(_w_overflow)), effective_sample_size(_w_overflow))
+check('effective_sample_size on 50 equal (however extreme) positive weights correctly '
+      'reports ESS = 50, not NaN',
+      np.isclose(effective_sample_size(_w_overflow), 50.0), effective_sample_size(_w_overflow))
+check('effective_sample_size is unaffected by this fix for ordinary, well-conditioned '
+      'weights (same value as the naive formula)',
+      np.isclose(effective_sample_size(np.full(10, 1.0)), 10.0))
+
 
 print('\n=== KDE pattern-aware subsampling: budget is not wasted on rows a pattern cannot use ===')
 # Mimics the real bug at small scale: 950/1000 rows are missing column 1
