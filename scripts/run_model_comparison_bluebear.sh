@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=cmsne-models
 #SBATCH --output=slurm_logs/models-%j.out
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=24G
 #SBATCH --constraint=icelake
 #SBATCH --mail-type=END,FAIL
 
@@ -24,16 +24,18 @@ echo "host=$(hostname)  pwd=$(pwd)  commit=$(git rev-parse --short HEAD 2>/dev/n
 
 DATA_DIR="${1:-results/dual_59297152}"
 
+OUT_DIR="${2:-docs/figures/model_comparison}"
+
 echo "=== 1. Benchmarking Trajectory Classifier Improvements & Replacements (all_lensed) ==="
 python -u scripts/compare_trajectory_models.py \
     --data-dir "$DATA_DIR" \
-    --out-dir results/figures_model_comparison \
+    --out-dir "$OUT_DIR" \
     --target all_lensed
 
 echo "=== 2. Benchmarking Trajectory Classifier Improvements & Replacements (lensed_ia) ==="
 python -u scripts/compare_trajectory_models.py \
     --data-dir "$DATA_DIR" \
-    --out-dir results/figures_model_comparison \
+    --out-dir "$OUT_DIR" \
     --target lensed_ia
 
 echo "Model benchmark complete!"

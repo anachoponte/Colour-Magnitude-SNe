@@ -42,8 +42,18 @@ Evaluates:
   - Annual pure lensed SNe yield in LSST
 
 Outputs JSON summary and comparison figures.
+
+Local-density calibration discount (added after issue #50): every model's
+raw score above is also passed through _VectorizedDensityBlender, a
+batched, model-agnostic port of the same thin-local-support discount issue
+#50 added to the real deployed classifier's score(). Before this, this
+benchmark's own zero-FP/pure-yield numbers had no such correction at all,
+so comparing them against the (now-corrected) real deployed baseline in
+docs/session_writeup.md Finding 2 was comparing a corrected number against
+uncorrected ones -- see that finding's stale-baseline caveat.
 """
 import argparse, json, os, pickle, sys, time
+from collections import OrderedDict
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -64,6 +74,11 @@ from cmsne.trajectory import (
     _step_suffix, reveal_up_to
 )
 from cmsne.lsst import bands as LSST_BANDS
+from cmsne.classifier import (
+    _finite_pattern, _scott_bandwidths, _weighted_subsample, _blend_weight,
+    DEFAULT_ESS_THRESHOLD, DEFAULT_LOG_WIDTH,
+)
+from cmsne.importance_sampling import effective_sample_size
 from cmsne.multicolour import ADJ_COLOURS
 
 CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn2n',
@@ -80,6 +95,176 @@ ANNUAL_RATES = {
     'all_lensed': {'N_sig': 45.0, 'N_bg': 100_000.0},
     'lensed_ia':  {'N_sig': 10.0, 'N_bg': 100_000.0},
 }
+
+# Benchmark-scale local-density blend defaults. Smaller kde_max_events than
+# cmsne.classifier's deployed default (4000) and a bounded query chunk size,
+# since this benchmark's test sets (150k-300k rows, see main()) are 10-100x
+# larger than any population the deployed blend has ever been run against --
+# see _VectorizedDensityBlender's docstring for why this needs its own,
+# batched implementation rather than reusing the per-event one directly.
+BENCHMARK_KDE_MAX_EVENTS = 1000
+BENCHMARK_KDE_PATTERN_CACHE_SIZE = 512
+BENCHMARK_CHUNK_SIZE = 256
+
+
+class _VectorizedDensityBlender:
+    """Model-agnostic local-density calibration discount, applied post-hoc
+    to any of this benchmark's 6 models here -- the SAME mechanism issue
+    #50 showed was missing from the real deployed classifier's score(),
+    applied to this script's own architectures so the zero-FP/pure-yield
+    comparison isn't pitting a now-corrected deployed baseline against 6
+    uncorrected ones (see docs/session_writeup.md Finding 4's stale-baseline
+    caveat).
+
+    Two deliberate simplifications vs cmsne.classifier._blend_with_local_density:
+
+    1. VECTORIZED, not per-event. The real implementation loops one event
+       at a time because it ALSO does per-event noise-injection replication
+       there, which inherently differs row by row. This benchmark's models
+       have no equivalent per-event uncertainty replication, so every query
+       row sharing the same missing-data pattern is batched into one chunked
+       distance computation instead of a Python loop -- a per-event port
+       would not finish in reasonable time at this benchmark's scale (test
+       sets of 150k-300k rows, vs the thousands of events issue #50's own
+       per-row replication cost was already measured against).
+    2. NO adaptive bandwidth widening (cmsne.classifier._widened_kernel_values).
+       That refinement improves the KDE side's OWN density-ratio precision in
+       genuinely data-starved regions; it does not affect the tree-vs-KDE
+       blend-weight decision itself (which stays on the fixed-bandwidth local
+       ESS either way). Skipping it trades some of that precision for a
+       vectorizable implementation -- a real, documented simplification, not
+       a hidden one.
+
+    The reference population for each blender is the plain (non-causal-
+    prefix-augmented, non-replicated) training split -- the same convention
+    cmsne.classifier.ColourClassifier._store_kde_training_data uses: the
+    density reference is the authentic population, with any training-time
+    augmentation/replication layered on top as a separate concern.
+    """
+
+    def __init__(self, X_train, y_train, w_train,
+                 ess_threshold=DEFAULT_ESS_THRESHOLD, log_width=DEFAULT_LOG_WIDTH,
+                 kde_max_events=BENCHMARK_KDE_MAX_EVENTS,
+                 pattern_cache_size=BENCHMARK_KDE_PATTERN_CACHE_SIZE,
+                 chunk_size=BENCHMARK_CHUNK_SIZE):
+        y_train = np.asarray(y_train)
+        sig, bg = y_train == 1, y_train == 0
+        self.Xs = np.asarray(X_train[sig], dtype=float)
+        self.ws = np.asarray(w_train[sig], dtype=float)
+        self.Xb = np.asarray(X_train[bg], dtype=float)
+        self.wb = np.asarray(w_train[bg], dtype=float)
+        pooled_X = np.vstack([self.Xs, self.Xb])
+        pooled_w = np.r_[self.ws, self.wb]
+        self.bandwidths = _scott_bandwidths(pooled_X, pooled_w)
+        self.ess_threshold = ess_threshold
+        self.log_width = log_width
+        self.kde_max_events = kde_max_events
+        self.pattern_cache_size = pattern_cache_size
+        self.chunk_size = chunk_size
+        self._cache = OrderedDict()
+
+    def _subset_for_pattern(self, pattern, dims):
+        if pattern in self._cache:
+            self._cache.move_to_end(pattern)
+            return self._cache[pattern]
+        finite_s = np.all(np.isfinite(self.Xs[:, dims]), axis=1)
+        finite_b = np.all(np.isfinite(self.Xb[:, dims]), axis=1)
+        Xs_cap, ws_cap, _ = _weighted_subsample(self.Xs[finite_s], self.ws[finite_s], self.kde_max_events)
+        Xb_cap, wb_cap, _ = _weighted_subsample(self.Xb[finite_b], self.wb[finite_b], self.kde_max_events)
+        self._cache[pattern] = (Xs_cap, ws_cap, Xb_cap, wb_cap)
+        if len(self._cache) > self.pattern_cache_size:
+            self._cache.popitem(last=False)
+        return self._cache[pattern]
+
+    def _batched_kernel_stats(self, Q, dims, Xref, wref):
+        """Per-query-row ``(sum, ESS)`` of ``wref[i] * exp(-0.5 * sum_d
+        ((Q[:,d]-Xref[i,d])/h[d])**2)``, chunked over the query axis to
+        bound memory to ``(chunk_size, len(Xref), len(dims))`` rather than
+        ``(len(Q), len(Xref), len(dims))``. ESS uses the same overflow-safe
+        max-normalization as ``cmsne.importance_sampling.effective_sample_size``
+        (issue #50), applied per row.
+        """
+        n = len(Q)
+        sums = np.zeros(n)
+        ess = np.zeros(n)
+        if len(dims) == 0 or len(Xref) == 0:
+            return sums, ess
+        hd = self.bandwidths[dims]
+        Xd = Xref[:, dims]
+        for start in range(0, n, self.chunk_size):
+            end = min(start + self.chunk_size, n)
+            Qc = Q[start:end][:, dims]
+            z = (Qc[:, None, :] - Xd[None, :, :]) / hd[None, None, :]
+            k = np.exp(-0.5 * np.sum(z ** 2, axis=2))
+            g = k * wref[None, :]
+            s = g.sum(axis=1)
+            scale = np.max(np.abs(g), axis=1)
+            safe = (scale > 0) & np.isfinite(scale)
+            gn = np.divide(g, scale[:, None], out=np.zeros_like(g), where=safe[:, None])
+            denom = np.sum(gn ** 2, axis=1)
+            valid = safe & (denom > 0)
+            e = np.zeros(end - start)
+            e[valid] = (gn[valid].sum(axis=1)) ** 2 / denom[valid]
+            sums[start:end] = s
+            ess[start:end] = e
+        return sums, ess
+
+    def precompute(self, X):
+        """``(alpha, p_kde, has_support)`` for every row of ``X`` -- the
+        blend-weight and KDE-side posterior, independent of any particular
+        model's tree score. Callers combine this once per feature matrix
+        with each model's own raw score via :meth:`combine`, rather than
+        rebuilding it per model when several models share the same ``X``
+        (e.g. all 30-feature or all 132-feature models here).
+        """
+        X = np.asarray(X, dtype=float)
+        n = len(X)
+        alpha = np.ones(n)
+        p_kde = np.zeros(n)
+        has_support = np.zeros(n, dtype=bool)
+        finite = np.isfinite(X)
+        # Group rows by their exact missing-data pattern so each distinct
+        # pattern's reference subset + kernel evaluation runs once, batched
+        # over every row that shares it.
+        by_pattern = {}
+        for i in range(n):
+            by_pattern.setdefault(tuple(finite[i]), []).append(i)
+        for pattern, idxs in by_pattern.items():
+            dims = np.where(np.asarray(pattern))[0]
+            if len(dims) == 0:
+                continue
+            Xs_cap, ws_cap, Xb_cap, wb_cap = self._subset_for_pattern(pattern, dims)
+            if len(Xs_cap) == 0 and len(Xb_cap) == 0:
+                continue
+            idxs = np.array(idxs)
+            Q = X[idxs]
+            s_sum, s_ess = self._batched_kernel_stats(Q, dims, Xs_cap, ws_cap)
+            b_sum, b_ess = self._batched_kernel_stats(Q, dims, Xb_cap, wb_cap)
+            total = s_sum + b_sum
+            ok = total > 1e-300
+            if not np.any(ok):
+                continue
+            p_kde_local = np.zeros(len(idxs))
+            p_kde_local[ok] = s_sum[ok] / total[ok]
+            m = np.minimum(s_ess, b_ess)
+            z = (np.log(m + 1e-12) - np.log(self.ess_threshold)) / self.log_width
+            alpha_local = 1.0 / (1.0 + np.exp(-z))
+            alpha[idxs[ok]] = alpha_local[ok]
+            p_kde[idxs[ok]] = p_kde_local[ok]
+            has_support[idxs[ok]] = True
+        return alpha, p_kde, has_support
+
+    @staticmethod
+    def combine(p_tree, components):
+        """Blend a model's own raw score with precomputed ``(alpha, p_kde,
+        has_support)`` from :meth:`precompute` -- falls back to ``p_tree``
+        unchanged wherever ``has_support`` is ``False`` (no nearby training
+        data of either class for that row's exact missing-data pattern)."""
+        alpha, p_kde, has_support = components
+        p_tree = np.asarray(p_tree, dtype=float)
+        out = np.array(p_tree, copy=True)
+        out[has_support] = alpha[has_support] * p_tree[has_support] + (1 - alpha[has_support]) * p_kde[has_support]
+        return out
 
 
 def split_events(events, rng, frac_train=0.7):
@@ -395,6 +580,21 @@ def main():
         X_te_base_steps[day], _ = extract_baseline_features(partial_te)
         X_te_enr_steps[day], _ = extract_enriched_features(partial_te)
 
+    # Local-density calibration discount (issue #50's fix, applied here to
+    # this benchmark's own models -- see _VectorizedDensityBlender). One
+    # blender per feature space, built from the plain (non-augmented)
+    # training population; its (alpha, p_kde, has_support) components are
+    # precomputed once per feature matrix and shared across every model that
+    # scores on that same matrix (models 1-2 share the 30-feature space,
+    # models 3-5 share the 132-feature space), rather than rebuilt per model.
+    print('Precomputing local-density calibration components (issue #50, applied to this benchmark)...')
+    blender_base = _VectorizedDensityBlender(X_tr_base, y_train, w_train)
+    blender_enr = _VectorizedDensityBlender(X_tr_enr, y_train, w_train)
+    density_base_full = blender_base.precompute(X_te_base)
+    density_base_steps = {d: blender_base.precompute(X_te_base_steps[d]) for d in TRAJECTORY_GRID}
+    density_enr_full = blender_enr.precompute(X_te_enr)
+    density_enr_steps = {d: blender_enr.precompute(X_te_enr_steps[d]) for d in TRAJECTORY_GRID}
+
     # To train models that are ALSO evaluated at partial epochs (+0d, +3d, +14d, ...),
     # let's check both standard full-trajectory training AND multi-step Masked-Prefix Augmentation!
     # Wait: in current TrajectoryClassifier, it is trained ONLY on fully-revealed trajectories,
@@ -422,8 +622,9 @@ def main():
     m1_base = HistGradientBoostingClassifier(max_depth=4, learning_rate=0.1, max_iter=300, l2_regularization=1.0, random_state=0)
     m1 = CalibratedClassifierCV(m1_base, method='isotonic', cv=3).fit(X_tr_base, y_train, sample_weight=w_train)
     t1 = time.time() - t0
-    s1_full = m1.predict_proba(X_te_base)[:, 1]
-    s1_steps = {d: m1.predict_proba(X_te_base_steps[d])[:, 1] for d in TRAJECTORY_GRID}
+    s1_full = _VectorizedDensityBlender.combine(m1.predict_proba(X_te_base)[:, 1], density_base_full)
+    s1_steps = {d: _VectorizedDensityBlender.combine(m1.predict_proba(X_te_base_steps[d])[:, 1], density_base_steps[d])
+                for d in TRAJECTORY_GRID}
     models_info.append(('1. Baseline GBDT (30 feat, Isotonic)', s1_full, s1_steps, t1, '#7f7f7f', '--'))
 
     # 2. Smooth-Calibrated Regularised GBDT (Platt Sigmoid + Larger Leaves)
@@ -432,8 +633,9 @@ def main():
     m2_base = HistGradientBoostingClassifier(max_depth=5, min_samples_leaf=80, learning_rate=0.06, max_iter=350, l2_regularization=5.0, random_state=0)
     m2 = CalibratedClassifierCV(m2_base, method='sigmoid', cv=3).fit(X_tr_base, y_train, sample_weight=w_train)
     t2 = time.time() - t0
-    s2_full = m2.predict_proba(X_te_base)[:, 1]
-    s2_steps = {d: m2.predict_proba(X_te_base_steps[d])[:, 1] for d in TRAJECTORY_GRID}
+    s2_full = _VectorizedDensityBlender.combine(m2.predict_proba(X_te_base)[:, 1], density_base_full)
+    s2_steps = {d: _VectorizedDensityBlender.combine(m2.predict_proba(X_te_base_steps[d])[:, 1], density_base_steps[d])
+                for d in TRAJECTORY_GRID}
     models_info.append(('2. Smooth-Calibrated GBDT (30 feat, Sigmoid)', s2_full, s2_steps, t2, '#1f77b4', '-.'))
 
     # 3. Physics-Enriched + Causal-Prefix GBDT (132 features: Snapshot + Fade + Broad Colours, Sigmoid)
@@ -442,8 +644,9 @@ def main():
     m3_base = HistGradientBoostingClassifier(max_depth=6, min_samples_leaf=80, learning_rate=0.06, max_iter=400, l2_regularization=5.0, random_state=0)
     m3 = CalibratedClassifierCV(m3_base, method='sigmoid', cv=3).fit(X_tr_enr_aug, y_train_aug, sample_weight=w_train_aug)
     t3 = time.time() - t0
-    s3_full = m3.predict_proba(X_te_enr)[:, 1]
-    s3_steps = {d: m3.predict_proba(X_te_enr_steps[d])[:, 1] for d in TRAJECTORY_GRID}
+    s3_full = _VectorizedDensityBlender.combine(m3.predict_proba(X_te_enr)[:, 1], density_enr_full)
+    s3_steps = {d: _VectorizedDensityBlender.combine(m3.predict_proba(X_te_enr_steps[d])[:, 1], density_enr_steps[d])
+                for d in TRAJECTORY_GRID}
     models_info.append(('3. Physics-Enriched GBDT (Snap+Fade+Prefix)', s3_full, s3_steps, t3, '#ff7f0e', '-'))
 
     # 4. Smooth Spline GAM (B-Splines + Missingness Masks + Ridge Logistic)
@@ -451,8 +654,9 @@ def main():
     t0 = time.time()
     m4 = SplineGAMClassifier(n_knots=5, degree=3, C=0.5).fit(X_tr_enr_aug, y_train_aug, sample_weight=w_train_aug)
     t4 = time.time() - t0
-    s4_full = m4.predict_proba(X_te_enr)
-    s4_steps = {d: m4.predict_proba(X_te_enr_steps[d]) for d in TRAJECTORY_GRID}
+    s4_full = _VectorizedDensityBlender.combine(m4.predict_proba(X_te_enr), density_enr_full)
+    s4_steps = {d: _VectorizedDensityBlender.combine(m4.predict_proba(X_te_enr_steps[d]), density_enr_steps[d])
+                for d in TRAJECTORY_GRID}
     models_info.append(('4. Smooth Spline GAM (B-Splines + Masks)', s4_full, s4_steps, t4, '#2ca02c', ':'))
 
     # 5. Mask-Aware Smooth Neural Network Ensemble (MLP + Observation Masks)
@@ -462,8 +666,9 @@ def main():
         X_tr_enr_aug, y_train_aug, sample_weight=w_train_aug
     )
     t5 = time.time() - t0
-    s5_full = m5.predict_proba(X_te_enr)
-    s5_steps = {d: m5.predict_proba(X_te_enr_steps[d]) for d in TRAJECTORY_GRID}
+    s5_full = _VectorizedDensityBlender.combine(m5.predict_proba(X_te_enr), density_enr_full)
+    s5_steps = {d: _VectorizedDensityBlender.combine(m5.predict_proba(X_te_enr_steps[d]), density_enr_steps[d])
+                for d in TRAJECTORY_GRID}
     models_info.append(('5. Mask-Aware Neural MLP Ensemble', s5_full, s5_steps, t5, '#9467bd', '--'))
 
     # 6. Hybrid Physics-Enriched GBDT + Smooth Neural MLP Ensemble (Log-Odds Blend)
