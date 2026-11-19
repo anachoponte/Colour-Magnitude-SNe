@@ -166,8 +166,17 @@ def rank_epoch(clf, k, calib_sig, calib_bg, val_sig, val_bg, w_calib_sig, w_cali
         denom = ts['annual_tp'] + ts['annual_fp']
         ts['purity_pct'] = 100.0 * ts['annual_tp'] / denom if denom > 0 else 0.0
         ts['tp_ess'], ts['fp_ess'] = tp_ess, fp_ess
-        ts['thin_sample'] = (ts['n_tp'] + ts['n_fp'] > 0 and
-                             (tp_ess + fp_ess) < MIN_SAMPLE_FOR_STATS)
+        # Same thin-sample convention as investigate_contaminant_properties.py:
+        # ANY of the four falling below the threshold flags the tier. Summing
+        # the two ESS values instead would let a tier whose true-positive side
+        # rests on ~1 effective event pass unflagged on the strength of its
+        # background side. Weights here are skewed enough that ESS is often an
+        # order of magnitude below the raw count, so this is the number that
+        # decides whether a purity figure is reportable at all.
+        ts['thin_sample'] = (ts['n_tp'] < MIN_SAMPLE_FOR_STATS or
+                             ts['n_fp'] < MIN_SAMPLE_FOR_STATS or
+                             tp_ess < MIN_SAMPLE_FOR_STATS or
+                             fp_ess < MIN_SAMPLE_FOR_STATS)
         del ts['w_tp'], ts['w_fp']
 
     return (ranked_rows, thresholds, tier_stats, int(true_label.sum()),
