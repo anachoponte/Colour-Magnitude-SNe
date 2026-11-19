@@ -20,7 +20,7 @@ sys.path.insert(0, _ROOT)
 from cmsne.lsst import contaminant_info
 from cmsne.supernovae import redshift_limits
 from cmsne.multicolour import MultiColourGenerator, rate_weight
-from cmsne.importance_sampling import generate_with_boosting
+from cmsne.importance_sampling import generate_with_boosting, weighted_median
 
 # Class table: (name, sncosmo source, 'lensed'/'unlensed', rate-kind, abs_mag, sigma)
 CLASSES = [
@@ -101,10 +101,16 @@ def main():
                          'n_attempted': args.n, 'events': pop, 'boost_info': boost_info},
                         f, protocol=pickle.HIGHEST_PROTOCOL)
         nb = np.array([e['n_bands'] for e in pop]) if pop else np.array([0])
-        tot_rate = float(np.sum([e['weight'] for e in pop])) if pop else 0.0
+        wb = np.array([e['weight'] for e in pop]) if pop else np.array([1.0])
+        tot_rate = float(np.sum(wb)) if pop else 0.0
         row = {'class': cls['name'], 'kept': len(pop), 'n_attempted': args.n,
                'min_detections': args.min_detections,
-               'median_n_bands': float(np.median(nb)),
+               # Rate-weighted, not np.median -- this population is pilot+boost
+               # importance sampled (generate_with_boosting), which deliberately
+               # over-samples rare (z, magnification) regions; an unweighted
+               # median would read that sampling density as if it were the real
+               # band-availability distribution.
+               'median_n_bands': weighted_median(nb, wb),
                'annual_detection_rate': tot_rate,
                'minutes': round((time.time() - t0) / 60, 2)}
         json.dump(row, open(os.path.join(out, f'{cls["name"]}.summary.json'), 'w'), indent=2)
