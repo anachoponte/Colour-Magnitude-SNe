@@ -986,6 +986,40 @@ check('ESS of empty/all-zero weights is 0.0',
       isamp.effective_sample_size(np.array([])) == 0.0 and
       isamp.effective_sample_size(np.zeros(5)) == 0.0)
 
+print('\n=== importance_sampling: weighted_quantile/weighted_median/weighted_composition '
+      '(issue found investigating "surprising high-z contaminants" -- Finding 5 '
+      'was characterizing a rate-weighted MC sample with unweighted raw-count stats) ===')
+check('weighted_quantile with uniform weights matches plain np.median',
+      np.isclose(isamp.weighted_quantile(np.arange(11), np.ones(11), 0.5), 5.0))
+# One massively-oversampled-but-tiny-weight event must NOT move the median,
+# even though it is half the raw event count -- the exact failure mode that
+# produced the "high-z contaminant" surprise (many downweighted MC draws of
+# a rare tail region, read as if they were as common as the bulk sample).
+_wq_vals = np.r_[np.zeros(10), np.full(10, 1000.0)]
+_wq_w = np.r_[np.ones(10), np.full(10, 1e-6)]
+check('weighted_quantile ignores a heavily-downweighted half of the raw sample',
+      np.isclose(isamp.weighted_quantile(_wq_vals, _wq_w, 0.5), 0.0, atol=0.5),
+      isamp.weighted_quantile(_wq_vals, _wq_w, 0.5))
+check('weighted_median matches weighted_quantile(..., 0.5)',
+      isamp.weighted_median(_wq_vals, _wq_w) == isamp.weighted_quantile(_wq_vals, _wq_w, 0.5))
+check('weighted_quantile returns nan for all-zero/empty weights',
+      np.isnan(isamp.weighted_quantile(np.arange(5), np.zeros(5), 0.5)) and
+      np.isnan(isamp.weighted_quantile(np.array([]), np.array([]), 0.5)))
+
+_wc_tags = np.array(['a'] * 10 + ['b'] * 10)
+_wc_w_uniform = np.ones(20)
+check('weighted_composition with uniform weights matches raw 50/50 count split',
+      np.isclose(isamp.weighted_composition(_wc_tags, _wc_w_uniform)['a'], 0.5))
+_wc_w_skewed = np.r_[np.full(10, 1e-6), np.ones(10)]
+check('weighted_composition correctly discounts a numerous but tiny-weight tag '
+      '-- the composition-table analogue of the median check above',
+      isamp.weighted_composition(_wc_tags, _wc_w_skewed)['b'] > 0.99,
+      isamp.weighted_composition(_wc_tags, _wc_w_skewed))
+check('weighted_composition fractions sum to 1.0',
+      np.isclose(sum(isamp.weighted_composition(_wc_tags, _wc_w_skewed).values()), 1.0))
+check('weighted_composition is {} for all-zero weights',
+      isamp.weighted_composition(_wc_tags, np.zeros(20)) == {})
+
 # 4x4 grid over gr in [0,4], peakmag in [20,24]: fill every cell densely except one.
 _rng_d = np.random.default_rng(0)
 _dense_events, _dense_w = [], []

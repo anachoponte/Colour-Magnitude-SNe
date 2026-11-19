@@ -50,6 +50,68 @@ def effective_sample_size(weights):
     return float(wn.sum() ** 2 / denom)
 
 
+def weighted_quantile(values, weights, q):
+    """Rate-weighted quantile (``q`` in ``[0, 1]``) of ``values``.
+
+    Plain ``np.percentile``/``np.median`` treat every event as equally
+    likely, which silently reintroduces the exact bias this module's
+    pilot+boost importance sampling corrects for: a deliberately
+    oversampled, heavily-downweighted rare event counts the same as a
+    common one. Any script that characterizes a rate-weighted Monte Carlo
+    sample (e.g. "what does the false-positive population look like")
+    must use this -- or :func:`weighted_median` -- instead of a plain
+    quantile, or the deliberately non-uniform sampling density shows up as
+    if it were the real physical distribution (see Finding 5's own
+    high-z-contaminant correction in docs/session_writeup.md for a worked
+    example of exactly this mistake).
+
+    :param values: 1D array-like of event values.
+    :param weights: per-event rate weights, same length as ``values``.
+    :param q: quantile in ``[0, 1]`` (``0.5`` = median).
+    :return: the weighted quantile, or ``nan`` if there is no finite,
+        positively-weighted data.
+    """
+    v = np.asarray(values, dtype=float)
+    w = np.asarray(weights, dtype=float)
+    finite = np.isfinite(v) & np.isfinite(w) & (w > 0)
+    if not np.any(finite):
+        return float('nan')
+    v, w = v[finite], w[finite]
+    order = np.argsort(v)
+    v, w = v[order], w[order]
+    cum = (np.cumsum(w) - 0.5 * w) / w.sum()
+    return float(np.interp(q, cum, v))
+
+
+def weighted_median(values, weights):
+    """Rate-weighted median; see :func:`weighted_quantile`."""
+    return weighted_quantile(values, weights, 0.5)
+
+
+def weighted_composition(tags, weights):
+    """Rate-weighted share of each distinct value in ``tags``.
+
+    Counts each tag by summed rate weight rather than raw event count --
+    the count-based version silently reintroduces the same bias
+    :func:`weighted_quantile` warns about, since this module's own
+    pilot+boost sampling deliberately draws some tags far more densely
+    than their true rate.
+
+    :param tags: 1D array-like of hashable labels, one per event.
+    :param weights: per-event rate weights, same length as ``tags``.
+    :return: ``{tag: weight_fraction}`` over positively-weighted finite
+        entries, summing to ``1.0`` (empty dict if none).
+    """
+    tags = np.asarray(tags)
+    w = np.asarray(weights, dtype=float)
+    finite = np.isfinite(w) & (w > 0)
+    if not np.any(finite):
+        return {}
+    tags, w = tags[finite], w[finite]
+    total = w.sum()
+    return {str(tag): float(w[tags == tag].sum() / total) for tag in np.unique(tags)}
+
+
 def diagnose_sparse_cells(events, weights, band_pair_keys=BAND_PAIR_KEYS,
                           magnitude_key='peakmag', n_bins=8, ess_floor_fraction=0.05):
     """Flag (band_pair, cell) regions where this class's own ESS is too thin.

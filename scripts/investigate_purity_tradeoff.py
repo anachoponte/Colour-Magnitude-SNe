@@ -29,6 +29,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
+from cmsne.importance_sampling import weighted_median
 
 CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn2n',
            'lensed_sn2p', 'unlensed_sn1bc', 'unlensed_sn2l', 'unlensed_sn2n', 'unlensed_sn2p']
@@ -173,9 +174,20 @@ def main():
         if pure_events:
             pure_z = [e['z'] for e in pure_events]
             pure_mu = [e.get('magnification', 1.0) for e in pure_events]
+            pure_w = ws_te[res['pure_mask_sig']]
+            # Rate-weighted median, not np.median -- this dataset is pilot+boost
+            # importance-sampled (cmsne.importance_sampling), which deliberately
+            # over-samples rare/extreme events and corrects each one's own weight
+            # down accordingly; an unweighted median re-introduces exactly that
+            # sampling-density bias (see scripts/investigate_contaminant_
+            # properties.py's module docstring and docs/session_writeup.md
+            # Finding 5's "high-z contaminant" correction for a worked example
+            # of this same mistake). min/max are unaffected -- they describe the
+            # true range of drawn values regardless of how likely each one is.
             print(f'  Sweet-spot events: z = {np.min(pure_z):.2f}-{np.max(pure_z):.2f} '
-                  f'(median {np.median(pure_z):.2f}), mu = {np.min(pure_mu):.1f}-{np.max(pure_mu):.1f} '
-                  f'(median {np.median(pure_mu):.1f})')
+                  f'(weighted median {weighted_median(pure_z, pure_w):.2f}), '
+                  f'mu = {np.min(pure_mu):.1f}-{np.max(pure_mu):.1f} '
+                  f'(weighted median {weighted_median(pure_mu, pure_w):.1f})')
     print('=' * 100)
 
     # ------------------------------------------------------------------

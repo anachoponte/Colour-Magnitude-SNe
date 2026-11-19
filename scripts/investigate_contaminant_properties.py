@@ -32,6 +32,24 @@ how many false positives it removes vs. how many true positives it costs.
 Magnification mu is reported descriptively for true positives only (the
 simulator gives every unlensed background event mu=1.0 exactly, so there is no
 background mu distribution to cut against).
+
+IMPORTANT -- every per-event statistic below is RATE-WEIGHTED, not a raw
+test-set count. This dataset is produced by pilot+boost importance sampling
+(cmsne.importance_sampling), which deliberately over-samples rare, extreme
+(z, magnification) regions for Monte Carlo statistics and corrects each such
+event's own `weight` down accordingly. An earlier version of this script
+computed subtype composition, z/trigger_day/SNR medians, and the z-cut's
+removed/retained percentages from raw unweighted counts -- which silently
+re-introduces exactly the sampling-density bias this project's own importance
+weights exist to correct for, and produced a materially misleading picture
+("surprising high-z non-lensed contaminants" that were mostly deliberately
+oversampled, heavily-downweighted rare draws, not a real contamination level;
+see docs/session_writeup.md Finding 5's correction). Composition uses
+cmsne.importance_sampling.weighted_composition; all medians and the z-window
+percentiles use weighted_quantile/weighted_median; both histogram figures
+pass `weights=` to matplotlib. Any new diagnostic added to this script MUST
+go through these same weighted helpers, never a plain np.median/np.percentile
+or a raw np.unique count, on pain of repeating this exact mistake.
 """
 import argparse, json, os, pickle, sys
 import numpy as np
@@ -44,6 +62,8 @@ sys.path.insert(0, _ROOT)
 
 from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
 from cmsne.lsst import CC_FRACTIONS
+from cmsne.importance_sampling import (weighted_composition, weighted_quantile,
+                                        weighted_median, effective_sample_size)
 
 CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn2n',
            'lensed_sn2p', 'unlensed_sn1bc', 'unlensed_sn2l', 'unlensed_sn2n', 'unlensed_sn2p']
@@ -131,17 +151,16 @@ def split(events, rng, frac_train=0.7):
     return [events[i] for i in idx[:n_train]], [events[i] for i in idx[n_train:]]
 
 
-def _subtype_composition(tags):
-    if len(tags) == 0:
-        return {}
-    subtypes, counts = np.unique(tags, return_counts=True)
-    return {s: int(c) for s, c in zip(subtypes, counts)}
-
-
 def analyze_epoch_contamination(clf, k, test_sig, test_bg, bg_subtype_te, ws_te, wb_te,
                                  N_sig_ann, N_bg_ann):
     """Score test events using only information available as of decision epoch
-    k, then characterize the false positives at each standard FPR budget."""
+    k, then characterize the false positives at each standard FPR budget.
+
+    Every per-event statistic reported here is rate-weighted (see the module
+    docstring) -- composition, medians, and the z-cut's removed/retained
+    percentages all go through weighted_composition/weighted_quantile, never
+    a plain np.median/np.unique count, on this dataset's own importance-
+    sampled population."""
     sig_k = [reveal_up_to(e, k, TRAJECTORY_GRID) for e in test_sig]
     bg_k = [reveal_up_to(e, k, TRAJECTORY_GRID) for e in test_bg]
     score_sig = clf.score(sig_k)
@@ -176,6 +195,8 @@ def analyze_epoch_contamination(clf, k, test_sig, test_bg, bg_subtype_te, ws_te,
         fp_mask = score_bg >= thr
         tp_mask = score_sig >= thr
         n_fp, n_tp = int(np.sum(fp_mask)), int(np.sum(tp_mask))
+        w_fp, w_tp = wb_te[fp_mask], ws_te[tp_mask]
+        fp_ess, tp_ess = effective_sample_size(w_fp), effective_sample_size(w_tp)
 
         f_val, t_val = float(fpr[idx]), float(tpr[idx])
         tp_ann, fp_ann = t_val * N_sig_ann, f_val * N_bg_ann
@@ -184,35 +205,41 @@ def analyze_epoch_contamination(clf, k, test_sig, test_bg, bg_subtype_te, ws_te,
         op = {
             'name': name, 'target_fpr': target_f, 'achieved_fpr': f_val, 'achieved_tpr': t_val,
             'annual_tp': tp_ann, 'annual_fp': fp_ann, 'purity_pct': purity, 'threshold': thr,
-            'n_fp_test': n_fp, 'n_tp_test': n_tp,
-            'thin_sample': n_fp < MIN_SAMPLE_FOR_STATS or n_tp < MIN_SAMPLE_FOR_STATS,
-            'fp_subtype_composition': _subtype_composition(bg_subtype_te[fp_mask]),
-            'tp_z_median': float(np.median(z_sig[tp_mask])) if n_tp > 0 else None,
-            'tp_mu_median': float(np.median(mu_sig[tp_mask])) if n_tp > 0 else None,
-            'tp_trigger_day_median': float(np.nanmedian(trigday_sig[tp_mask])) if n_tp > 0 else None,
-            'fp_trigger_day_median': float(np.nanmedian(trigday_bg[fp_mask])) if n_fp > 0 else None,
-            'tp_peakmag_err_median': float(np.nanmedian(err_sig[tp_mask])) if n_tp > 0 else None,
-            'fp_peakmag_err_median': float(np.nanmedian(err_bg[fp_mask])) if n_fp > 0 else None,
+            'n_fp_test': n_fp, 'n_tp_test': n_tp, 'fp_ess': fp_ess, 'tp_ess': tp_ess,
+            'thin_sample': (n_fp < MIN_SAMPLE_FOR_STATS or n_tp < MIN_SAMPLE_FOR_STATS or
+                            fp_ess < MIN_SAMPLE_FOR_STATS or tp_ess < MIN_SAMPLE_FOR_STATS),
+            'fp_subtype_composition': weighted_composition(bg_subtype_te[fp_mask], w_fp),
+            'tp_z_median': weighted_median(z_sig[tp_mask], w_tp) if n_tp > 0 else None,
+            'tp_mu_median': weighted_median(mu_sig[tp_mask], w_tp) if n_tp > 0 else None,
+            'tp_trigger_day_median': weighted_median(trigday_sig[tp_mask], w_tp) if n_tp > 0 else None,
+            'fp_trigger_day_median': weighted_median(trigday_bg[fp_mask], w_fp) if n_fp > 0 else None,
+            'tp_peakmag_err_median': weighted_median(err_sig[tp_mask], w_tp) if n_tp > 0 else None,
+            'fp_peakmag_err_median': weighted_median(err_bg[fp_mask], w_fp) if n_fp > 0 else None,
             'z_secondary_cut': None,
         }
 
-        if n_tp >= MIN_SAMPLE_FOR_STATS and n_fp >= MIN_SAMPLE_FOR_STATS:
-            z_tp = z_sig[tp_mask]
-            z_lo, z_hi = (float(x) for x in np.percentile(z_tp, Z_WINDOW_PERCENTILES))
-            fp_z = z_bg[fp_mask]
+        if (n_tp >= MIN_SAMPLE_FOR_STATS and n_fp >= MIN_SAMPLE_FOR_STATS and
+                tp_ess >= MIN_SAMPLE_FOR_STATS and fp_ess >= MIN_SAMPLE_FOR_STATS):
+            z_tp, fp_z = z_sig[tp_mask], z_bg[fp_mask]
+            q_lo, q_hi = (p / 100.0 for p in Z_WINDOW_PERCENTILES)
+            z_lo = weighted_quantile(z_tp, w_tp, q_lo)
+            z_hi = weighted_quantile(z_tp, w_tp, q_hi)
             fp_in_window = (fp_z >= z_lo) & (fp_z <= z_hi)
             tp_in_window = (z_tp >= z_lo) & (z_tp <= z_hi)
-            n_fp_after, n_tp_after = int(np.sum(fp_in_window)), int(np.sum(tp_in_window))
-            tp_ann_after = tp_ann * (n_tp_after / n_tp)
-            fp_ann_after = fp_ann * (n_fp_after / n_fp)
+            fp_w_before, fp_w_after = float(w_fp.sum()), float(w_fp[fp_in_window].sum())
+            tp_w_before, tp_w_after = float(w_tp.sum()), float(w_tp[tp_in_window].sum())
+            fp_removed_pct = float(np.clip(100.0 * (1.0 - fp_w_after / fp_w_before), 0.0, 100.0)) if fp_w_before > 0 else 0.0
+            tp_retained_pct = float(np.clip(100.0 * tp_w_after / tp_w_before, 0.0, 100.0)) if tp_w_before > 0 else 0.0
+            tp_ann_after = tp_ann * (tp_w_after / tp_w_before) if tp_w_before > 0 else 0.0
+            fp_ann_after = fp_ann * (fp_w_after / fp_w_before) if fp_w_before > 0 else 0.0
             purity_after = (tp_ann_after / (tp_ann_after + fp_ann_after) * 100
                              if (tp_ann_after + fp_ann_after) > 0 else 0.0)
             op['z_secondary_cut'] = {
                 'z_window': [z_lo, z_hi],
-                'fp_before': n_fp, 'fp_after': n_fp_after,
-                'fp_removed_pct': 100.0 * (n_fp - n_fp_after) / n_fp,
-                'tp_before': n_tp, 'tp_after': n_tp_after,
-                'tp_retained_pct': 100.0 * n_tp_after / n_tp,
+                'fp_before': n_fp, 'fp_after': int(np.sum(fp_in_window)),
+                'fp_removed_pct': fp_removed_pct,
+                'tp_before': n_tp, 'tp_after': int(np.sum(tp_in_window)),
+                'tp_retained_pct': tp_retained_pct,
                 'annual_tp_after': tp_ann_after, 'annual_fp_after': fp_ann_after,
                 'purity_before_pct': purity, 'purity_after_pct': purity_after,
             }
@@ -224,7 +251,7 @@ def analyze_epoch_contamination(clf, k, test_sig, test_bg, bg_subtype_te, ws_te,
         'score_sig': score_sig, 'score_bg': score_bg, 'z_sig': z_sig, 'z_bg': z_bg,
         'trigday_sig': trigday_sig, 'trigday_bg': trigday_bg,
         'err_sig': err_sig, 'err_bg': err_bg,
-        'bg_subtype_te': bg_subtype_te,
+        'bg_subtype_te': bg_subtype_te, 'ws_te': ws_te, 'wb_te': wb_te,
     }
 
 
@@ -279,13 +306,14 @@ def main():
             print(f'\n  {op["name"]}{thin}: FPR={op["achieved_fpr"]*100:.3f}% '
                   f'TPR={op["achieved_tpr"]*100:.2f}% TP/yr={op["annual_tp"]:.1f} '
                   f'FP/yr={op["annual_fp"]:.0f} Purity={op["purity_pct"]:.2f}% '
-                  f'(n_fp_test={op["n_fp_test"]}, n_tp_test={op["n_tp_test"]})')
+                  f'(n_fp_test={op["n_fp_test"]}, n_tp_test={op["n_tp_test"]}, '
+                  f'fp_ess={op["fp_ess"]:.1f}, tp_ess={op["tp_ess"]:.1f})')
             if op['fp_subtype_composition']:
-                total_fp = sum(op['fp_subtype_composition'].values())
-                comp_str = ', '.join(f'{s}={c} ({100*c/total_fp:.0f}%)'
-                                      for s, c in sorted(op['fp_subtype_composition'].items(),
-                                                          key=lambda kv: -kv[1]))
-                print(f'    FP subtype composition: {comp_str}')
+                # Weight fractions (rate-weighted, NOT raw counts -- see module docstring).
+                comp_str = ', '.join(f'{s}={100*frac:.0f}%'
+                                      for s, frac in sorted(op['fp_subtype_composition'].items(),
+                                                             key=lambda kv: -kv[1]))
+                print(f'    FP subtype composition (rate-weighted): {comp_str}')
             if op['tp_z_median'] is not None:
                 print(f'    TP median z={op["tp_z_median"]:.2f}, median mu={op["tp_mu_median"]:.1f}, '
                       f'median trigger_day={op["tp_trigger_day_median"]:.1f}, '
@@ -334,33 +362,33 @@ def main():
     # ------------------------------------------------------------------
     last_day = TRAJECTORY_GRID[-1]
     res60 = results[last_day]
-    overall_comp = _subtype_composition(res60['bg_subtype_te'])
-    overall_total = sum(overall_comp.values())
+    # Rate-weighted, like every other composition figure here (see module
+    # docstring) -- NOT the raw count mix of this importance-sampled test set.
+    overall_comp = weighted_composition(res60['bg_subtype_te'], res60['wb_te'])
     subtypes_sorted = sorted(overall_comp, key=lambda s: -overall_comp[s])
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
-    # Flag budgets whose FP count is too thin to trust the composition shown
-    # (e.g. a single leaked-through event reading as "100% one subtype").
-    labels = [f'{name}\n(n={op["n_fp_test"]}){"*" if op["thin_sample"] else ""}'
+    # Flag budgets whose FP count/ESS is too thin to trust the composition
+    # shown (e.g. a single leaked-through event reading as "100% one subtype").
+    labels = [f'{name}\n(n={op["n_fp_test"]}, ESS={op["fp_ess"]:.0f}){"*" if op["thin_sample"] else ""}'
               for name, op in zip(budget_names, res60['operating_points'])] + ['Overall bg\nmix']
     bar_x = np.arange(len(labels))
     bottoms = np.zeros(len(labels))
     cmap2 = plt.cm.tab10(np.linspace(0, 1, len(subtypes_sorted)))
     for subtype, color in zip(subtypes_sorted, cmap2):
-        fracs = []
-        for op in res60['operating_points']:
-            total = sum(op['fp_subtype_composition'].values())
-            fracs.append(100.0 * op['fp_subtype_composition'].get(subtype, 0) / total if total > 0 else 0.0)
-        fracs.append(100.0 * overall_comp[subtype] / overall_total)
+        fracs = [100.0 * op['fp_subtype_composition'].get(subtype, 0.0) for op in res60['operating_points']]
+        fracs.append(100.0 * overall_comp[subtype])
         ax.bar(bar_x, fracs, bottom=bottoms, color=color, label=subtype, width=0.6)
         bottoms += np.array(fracs)
     ax.set_xticks(bar_x); ax.set_xticklabels(labels, fontsize=8)
-    ax.set_ylabel('Share of false positives (%)')
+    ax.set_ylabel('Share of false positives (%, rate-weighted)')
     ax.set_title(f'False-positive subtype composition by FPR budget ({signal_label}, +60d)\n'
                  f'rightmost bar = overall unlensed test-set mix, for reference', fontsize=11)
     ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.0, 1.0))
     ax.grid(True, linestyle='--', alpha=0.3, axis='y')
-    fig.text(0.01, 0.01, f'* = fewer than {MIN_SAMPLE_FOR_STATS} FPs in the test set at that budget -- composition is noisy',
+    fig.text(0.01, 0.01,
+              f'Rate-weighted composition, not raw counts. * = fewer than {MIN_SAMPLE_FOR_STATS} FPs or '
+              f'ESS < {MIN_SAMPLE_FOR_STATS} at that budget -- composition is unreliable',
               fontsize=7, style='italic')
     fig.tight_layout(rect=(0, 0.03, 1, 1))
     comp_path = os.path.join(args.out_dir, f'fp_subtype_composition{file_suffix}.png')
@@ -376,12 +404,18 @@ def main():
     fig, ax = plt.subplots(figsize=(8, 5.5))
     score_bg, score_sig = res60['score_bg'], res60['score_sig']
     z_sig, z_bg = res60['z_sig'], res60['z_bg']
+    ws_te, wb_te = res60['ws_te'], res60['wb_te']
     thr_val = op10['threshold']
     tp_mask = score_sig >= thr_val
     fp_mask = score_bg >= thr_val
+    w_tp_10, w_fp_10 = ws_te[tp_mask], wb_te[fp_mask]
     bins = np.linspace(0, max(z_sig.max(), z_bg.max()), 40)
-    ax.hist(z_sig[tp_mask], bins=bins, alpha=0.6, density=True, color='tab:green', label='True positives')
-    ax.hist(z_bg[fp_mask], bins=bins, alpha=0.6, density=True, color='tab:red', label='False positives')
+    # weights= makes these rate-weighted densities, not raw-count histograms
+    # -- see module docstring on why that distinction matters here.
+    ax.hist(z_sig[tp_mask], bins=bins, weights=w_tp_10, alpha=0.6, density=True,
+            color='tab:green', label='True positives')
+    ax.hist(z_bg[fp_mask], bins=bins, weights=w_fp_10, alpha=0.6, density=True,
+            color='tab:red', label='False positives')
     if op10['z_secondary_cut'] is not None:
         z_lo, z_hi = op10['z_secondary_cut']['z_window']
         ax.axvline(z_lo, color='k', ls='--', lw=1.2)
@@ -411,17 +445,19 @@ def main():
         ('peakmag_d60_err', res60['err_sig'], res60['err_bg'],
          'Final cumulative-best-magnitude uncertainty (mag)', 'contaminant_snr_10pct'),
     ):
-        tp_vals = sig_arr[tp_mask]
-        fp_vals = bg_arr[fp_mask]
-        tp_vals, fp_vals = tp_vals[np.isfinite(tp_vals)], fp_vals[np.isfinite(fp_vals)]
+        tp_fin, fp_fin = np.isfinite(sig_arr[tp_mask]), np.isfinite(bg_arr[fp_mask])
+        tp_vals, fp_vals = sig_arr[tp_mask][tp_fin], bg_arr[fp_mask][fp_fin]
+        w_tp_vals, w_fp_vals = w_tp_10[tp_fin], w_fp_10[fp_fin]
         if len(tp_vals) == 0 or len(fp_vals) == 0:
             print(f'Skipping {field} figure -- no finite values at this operating point.')
             continue
         fig, ax = plt.subplots(figsize=(8, 5.5))
         lo, hi = min(tp_vals.min(), fp_vals.min()), max(tp_vals.max(), fp_vals.max())
         bins = np.linspace(lo, hi, 40)
-        ax.hist(tp_vals, bins=bins, alpha=0.6, density=True, color='tab:green', label='True positives')
-        ax.hist(fp_vals, bins=bins, alpha=0.6, density=True, color='tab:red', label='False positives')
+        ax.hist(tp_vals, bins=bins, weights=w_tp_vals, alpha=0.6, density=True,
+                color='tab:green', label='True positives')
+        ax.hist(fp_vals, bins=bins, weights=w_fp_vals, alpha=0.6, density=True,
+                color='tab:red', label='False positives')
         ax.set_xlabel(xlabel); ax.set_ylabel('Density')
         ax.set_title(f'{xlabel} -- TP vs FP at 10% FPR budget ({signal_label}, +60d)\n'
                      f'diagnostic only -- not used as a classifier feature or a proposed cut')
