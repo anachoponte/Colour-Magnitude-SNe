@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=cmsne-contam
 #SBATCH --output=slurm_logs/contam-%j.out
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
@@ -26,6 +26,8 @@ DATA_DIR="${1:-results/dual_59297152}"
 OUT_DIR="${2:-docs/figures/purity_investigation}"
 
 echo "Running Contaminant Properties & Secondary-Cut Investigation on $DATA_DIR..."
-python -u scripts/investigate_contaminant_properties.py --data-dir "$DATA_DIR" --out-dir "$OUT_DIR" --target all_lensed
-python -u scripts/investigate_contaminant_properties.py --data-dir "$DATA_DIR" --out-dir "$OUT_DIR" --target lensed_ia
+for TARGET in all_lensed lensed_ia lensed_sn1bc lensed_sn2l lensed_sn2n lensed_sn2p; do
+    echo "=== target=$TARGET ==="
+    python -u scripts/investigate_contaminant_properties.py --data-dir "$DATA_DIR" --out-dir "$OUT_DIR" --target "$TARGET"
+done
 echo "Done!"
