@@ -43,16 +43,49 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
+from cmsne.lsst import CC_FRACTIONS
 
 CLASSES = ['lensed_Ia', 'unlensed_Ia', 'lensed_sn1bc', 'lensed_sn2l', 'lensed_sn2n',
            'lensed_sn2p', 'unlensed_sn1bc', 'unlensed_sn2l', 'unlensed_sn2n', 'unlensed_sn2p']
 UNLENSED_CLASSES = [c for c in CLASSES if c.startswith('unlensed_')]
+
+# Maps each individual lensed CC class to its cmsne.lsst.CC_FRACTIONS source key,
+# so its own annual rate can be derived below instead of invented.
+_CC_SOURCE_FOR_CLASS = {
+    'lensed_sn1bc': 'nugent-sn1bc', 'lensed_sn2l': 'nugent-sn2l',
+    'lensed_sn2n': 'nugent-sn2n', 'lensed_sn2p': 'nugent-sn2p',
+}
 
 # Same literature/placeholder rates as investigate_purity_tradeoff.py -- see
 # that script's header comment for the citations and caveats behind these.
 ANNUAL_RATES = {
     'all_lensed': {'N_sig': 45.0, 'N_bg': 100_000.0},
     'lensed_ia':  {'N_sig': 10.0, 'N_bg': 100_000.0},
+}
+# Per-CC-subtype rates: split the already-used lensed-CC total (all_lensed -
+# lensed_ia = 35/yr) by this project's own literature-sourced relative CC
+# subtype demographics (cmsne.lsst.CC_FRACTIONS; Li et al. 2011, Shivvers et
+# al. 2017 -- the same fractions already baked into every event's `weight`).
+# This is a split of an already-flagged, not-independently-validated total
+# (see all_lensed's own caveat, issue #43), so treat these as even more
+# provisional than the all_lensed/lensed_ia figures above.
+_LENSED_CC_TOTAL_ANN = ANNUAL_RATES['all_lensed']['N_sig'] - ANNUAL_RATES['lensed_ia']['N_sig']
+for _cls, _source in _CC_SOURCE_FOR_CLASS.items():
+    ANNUAL_RATES[_cls] = {'N_sig': _LENSED_CC_TOTAL_ANN * CC_FRACTIONS[_source], 'N_bg': 100_000.0}
+
+TARGET_SIGNAL_CLASSES = {
+    'all_lensed': [c for c in CLASSES if c.startswith('lensed_')],
+    'lensed_ia': ['lensed_Ia'],
+    'lensed_sn1bc': ['lensed_sn1bc'], 'lensed_sn2l': ['lensed_sn2l'],
+    'lensed_sn2n': ['lensed_sn2n'], 'lensed_sn2p': ['lensed_sn2p'],
+}
+TARGET_LABELS = {
+    'all_lensed': ('all lensed', '_alllensed'),
+    'lensed_ia': ('lensed Ia', ''),
+    'lensed_sn1bc': ('lensed SN Ibc', '_snibc'),
+    'lensed_sn2l': ('lensed SN IIL', '_sn2l'),
+    'lensed_sn2n': ('lensed SN IIn', '_sn2n'),
+    'lensed_sn2p': ('lensed SN IIP', '_sn2p'),
 }
 
 TABLE_POINTS = [
@@ -116,6 +149,14 @@ def analyze_epoch_contamination(clf, k, test_sig, test_bg, bg_subtype_te, ws_te,
     z_sig = np.array([e['z'] for e in test_sig])
     z_bg = np.array([e['z'] for e in test_bg])
     mu_sig = np.array([e.get('magnification', 1.0) for e in test_sig])
+    # Two more fields simulated for every event but never fed to the
+    # classifier as a feature: the survey epoch of first detection, and the
+    # final cumulative-best-magnitude measurement uncertainty (a photometric
+    # SNR proxy) -- purely diagnostic here, not a proposed cut.
+    trigday_sig = np.array([e.get('trigger_day', np.nan) for e in test_sig])
+    trigday_bg = np.array([e.get('trigger_day', np.nan) for e in test_bg])
+    err_sig = np.array([e.get('peakmag_d60_err', np.nan) for e in test_sig])
+    err_bg = np.array([e.get('peakmag_d60_err', np.nan) for e in test_bg])
 
     fpr, tpr, thresholds = clf.roc_curve(sig_k, bg_k, ws_te, wb_te)
     order = np.argsort(fpr)
@@ -148,6 +189,10 @@ def analyze_epoch_contamination(clf, k, test_sig, test_bg, bg_subtype_te, ws_te,
             'fp_subtype_composition': _subtype_composition(bg_subtype_te[fp_mask]),
             'tp_z_median': float(np.median(z_sig[tp_mask])) if n_tp > 0 else None,
             'tp_mu_median': float(np.median(mu_sig[tp_mask])) if n_tp > 0 else None,
+            'tp_trigger_day_median': float(np.nanmedian(trigday_sig[tp_mask])) if n_tp > 0 else None,
+            'fp_trigger_day_median': float(np.nanmedian(trigday_bg[fp_mask])) if n_fp > 0 else None,
+            'tp_peakmag_err_median': float(np.nanmedian(err_sig[tp_mask])) if n_tp > 0 else None,
+            'fp_peakmag_err_median': float(np.nanmedian(err_bg[fp_mask])) if n_fp > 0 else None,
             'z_secondary_cut': None,
         }
 
@@ -177,6 +222,8 @@ def analyze_epoch_contamination(clf, k, test_sig, test_bg, bg_subtype_te, ws_te,
         'fpr': fpr, 'tpr': tpr, 'pure_tpr': pure_tpr, 'pure_annual_tp': pure_annual_tp,
         'max_bg_score': max_bg_score, 'operating_points': operating_points,
         'score_sig': score_sig, 'score_bg': score_bg, 'z_sig': z_sig, 'z_bg': z_bg,
+        'trigday_sig': trigday_sig, 'trigday_bg': trigday_bg,
+        'err_sig': err_sig, 'err_bg': err_bg,
         'bg_subtype_te': bg_subtype_te,
     }
 
@@ -189,17 +236,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--data-dir', required=True)
     ap.add_argument('--out-dir', default='docs/figures/purity_investigation')
-    ap.add_argument('--target', choices=['lensed_ia', 'all_lensed'], default='all_lensed')
+    ap.add_argument('--target', choices=sorted(TARGET_SIGNAL_CLASSES), default='all_lensed')
     ap.add_argument('--seed', type=int, default=0)
     args = ap.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    if args.target == 'all_lensed':
-        signal_classes = [c for c in CLASSES if c.startswith('lensed_')]
-        signal_label, file_suffix = 'all lensed', '_alllensed'
-    else:
-        signal_classes = ['lensed_Ia']
-        signal_label, file_suffix = 'lensed Ia', ''
+    signal_classes = TARGET_SIGNAL_CLASSES[args.target]
+    signal_label, file_suffix = TARGET_LABELS[args.target]
 
     rates = ANNUAL_RATES[args.target]
     N_sig_ann, N_bg_ann = rates['N_sig'], rates['N_bg']
@@ -244,7 +287,12 @@ def main():
                                                           key=lambda kv: -kv[1]))
                 print(f'    FP subtype composition: {comp_str}')
             if op['tp_z_median'] is not None:
-                print(f'    TP median z={op["tp_z_median"]:.2f}, median mu={op["tp_mu_median"]:.1f}')
+                print(f'    TP median z={op["tp_z_median"]:.2f}, median mu={op["tp_mu_median"]:.1f}, '
+                      f'median trigger_day={op["tp_trigger_day_median"]:.1f}, '
+                      f'median peakmag_d60_err={op["tp_peakmag_err_median"]:.3f}')
+            if op['fp_trigger_day_median'] is not None:
+                print(f'    FP median trigger_day={op["fp_trigger_day_median"]:.1f}, '
+                      f'median peakmag_d60_err={op["fp_peakmag_err_median"]:.3f}')
             zc = op['z_secondary_cut']
             if zc is not None:
                 print(f'    Secondary z-window cut [{zc["z_window"][0]:.2f}, {zc["z_window"][1]:.2f}] '
@@ -349,6 +397,40 @@ def main():
     fig.savefig(z_path, dpi=150)
     plt.close(fig)
     print(f'Wrote {z_path}')
+
+    # ------------------------------------------------------------------
+    # Figures 4-5: TP vs FP distributions of two more fields simulated for
+    # every event but never used as classifier features -- survey epoch of
+    # first detection, and final photometric uncertainty (SNR proxy) -- at
+    # the same 10% FPR / +60d reference point as Figure 3. Diagnostic only:
+    # no secondary cut is proposed on these this round.
+    # ------------------------------------------------------------------
+    for field, sig_arr, bg_arr, xlabel, fname in (
+        ('trigger_day', res60['trigday_sig'], res60['trigday_bg'],
+         'Survey day of first detection (trigger_day)', 'contaminant_trigday_10pct'),
+        ('peakmag_d60_err', res60['err_sig'], res60['err_bg'],
+         'Final cumulative-best-magnitude uncertainty (mag)', 'contaminant_snr_10pct'),
+    ):
+        tp_vals = sig_arr[tp_mask]
+        fp_vals = bg_arr[fp_mask]
+        tp_vals, fp_vals = tp_vals[np.isfinite(tp_vals)], fp_vals[np.isfinite(fp_vals)]
+        if len(tp_vals) == 0 or len(fp_vals) == 0:
+            print(f'Skipping {field} figure -- no finite values at this operating point.')
+            continue
+        fig, ax = plt.subplots(figsize=(8, 5.5))
+        lo, hi = min(tp_vals.min(), fp_vals.min()), max(tp_vals.max(), fp_vals.max())
+        bins = np.linspace(lo, hi, 40)
+        ax.hist(tp_vals, bins=bins, alpha=0.6, density=True, color='tab:green', label='True positives')
+        ax.hist(fp_vals, bins=bins, alpha=0.6, density=True, color='tab:red', label='False positives')
+        ax.set_xlabel(xlabel); ax.set_ylabel('Density')
+        ax.set_title(f'{xlabel} -- TP vs FP at 10% FPR budget ({signal_label}, +60d)\n'
+                     f'diagnostic only -- not used as a classifier feature or a proposed cut')
+        ax.legend(fontsize=8); ax.grid(True, linestyle='--', alpha=0.3)
+        fig.tight_layout()
+        out_path = os.path.join(args.out_dir, f'{fname}{file_suffix}.png')
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f'Wrote {out_path}')
 
     # Save summary JSON (score/z arrays dropped -- large and reconstructable)
     summary = {
