@@ -1,0 +1,462 @@
+{
+  "signal_label": "lensed SN IIP",
+  "N_sig_annual": 19.25,
+  "N_bg_annual": 100000.0,
+  "photoz_sigma_frac": 0.03,
+  "by_decision_epoch": {
+    "0d": [
+      {
+        "name": "10% FPR (Standard Broker)",
+        "threshold": 0.6418846114807738,
+        "n_calib_fp": 576,
+        "n_calib_tp": 418,
+        "calib_fp_ess": 199.49289857485746,
+        "calib_tp_ess": 10.537406396402934,
+        "n_val_fp": 604,
+        "n_val_tp": 414,
+        "val_fp_ess": 151.35830146790326,
+        "val_tp_ess": 16.96195803521119,
+        "val_annual_tp": 6.7375327653121,
+        "val_annual_fp": 11129.93582514928,
+        "val_purity_pct": 0.06049861164800961,
+        "thin_sample": false,
+        "clean": {
+          "fp_removed_pct": 39.77365419049447,
+          "tp_retained_pct": 87.74332974390286,
+          "purity_before_pct": 0.06049861164800961,
+          "purity_after_pct": 0.08811563550658745
+        },
+        "noisy": {
+          "fp_removed_pct": 38.89555653759088,
+          "tp_retained_pct": 68.97695167175618,
+          "purity_before_pct": 0.06049861164800961,
+          "purity_after_pct": 0.06828774369593926
+        },
+        "z_window": [
+          0.42893914884380063,
+          1.4009928591122485
+        ]
+      },
+      {
+        "name": "1% FPR (Low Contamination)",
+        "threshold": 0.8335876885751383,
+        "n_calib_fp": 58,
+        "n_calib_tp": 92,
+        "calib_fp_ess": 12.784968028137662,
+        "calib_tp_ess": 6.066672654481189,
+        "n_val_fp": 61,
+        "n_val_tp": 84,
+        "val_fp_ess": 16.36855510132953,
+        "val_tp_ess": 7.216298761041812,
+        "val_annual_tp": 2.3129212573597364,
+        "val_annual_fp": 1115.783315129407,
+        "val_purity_pct": 0.2068624490530582,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.1% FPR (Strict Filter)",
+        "threshold": 0.9505016700191021,
+        "n_calib_fp": 3,
+        "n_calib_tp": 4,
+        "calib_fp_ess": 1.1054711577837486,
+        "calib_tp_ess": 2.142533252501763,
+        "n_val_fp": 5,
+        "n_val_tp": 5,
+        "val_fp_ess": 1.286407826165325,
+        "val_tp_ess": 1.0801939673447194,
+        "val_annual_tp": 0.013903271976597263,
+        "val_annual_fp": 39.17104438947642,
+        "val_purity_pct": 0.03548115489834935,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.01% FPR (Spectroscopic Candidate)",
+        "threshold": 0.9853805512255221,
+        "n_calib_fp": 2,
+        "n_calib_tp": 1,
+        "calib_fp_ess": 1.004825776655761,
+        "calib_tp_ess": 1.0,
+        "n_val_fp": 1,
+        "n_val_tp": 1,
+        "val_fp_ess": 0.0,
+        "val_tp_ess": 1.0,
+        "val_annual_tp": 1.7223984458442797e-12,
+        "val_annual_fp": 0.0,
+        "val_purity_pct": 100.0,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      }
+    ],
+    "3d": [
+      {
+        "name": "10% FPR (Standard Broker)",
+        "threshold": 0.645429347817126,
+        "n_calib_fp": 596,
+        "n_calib_tp": 480,
+        "calib_fp_ess": 202.8610754702952,
+        "calib_tp_ess": 11.399639884017638,
+        "n_val_fp": 634,
+        "n_val_tp": 490,
+        "val_fp_ess": 173.06179106335216,
+        "val_tp_ess": 25.22690564739276,
+        "val_annual_tp": 6.460023793769641,
+        "val_annual_fp": 12925.57621322951,
+        "val_purity_pct": 0.049953647479545116,
+        "thin_sample": false,
+        "clean": {
+          "fp_removed_pct": 16.828729040135038,
+          "tp_retained_pct": 96.47932783419378,
+          "purity_before_pct": 0.049953647479545116,
+          "purity_after_pct": 0.0579419922989507
+        },
+        "noisy": {
+          "fp_removed_pct": 17.171817454719818,
+          "tp_retained_pct": 96.61192354261208,
+          "purity_before_pct": 0.049953647479545116,
+          "purity_after_pct": 0.05826177349688074
+        },
+        "z_window": [
+          0.29612834739783495,
+          1.3918025010890587
+        ]
+      },
+      {
+        "name": "1% FPR (Low Contamination)",
+        "threshold": 0.9123499091076869,
+        "n_calib_fp": 68,
+        "n_calib_tp": 98,
+        "calib_fp_ess": 13.74187869621459,
+        "calib_tp_ess": 5.841405310246641,
+        "n_val_fp": 68,
+        "n_val_tp": 85,
+        "val_fp_ess": 16.33377761135023,
+        "val_tp_ess": 5.658411473912837,
+        "val_annual_tp": 2.0095518494974836,
+        "val_annual_fp": 991.8724327234443,
+        "val_purity_pct": 0.20219219994826268,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.1% FPR (Strict Filter)",
+        "threshold": 0.9823074126636681,
+        "n_calib_fp": 8,
+        "n_calib_tp": 8,
+        "calib_fp_ess": 1.2643871126627897,
+        "calib_tp_ess": 1.376680915237788,
+        "n_val_fp": 7,
+        "n_val_tp": 2,
+        "val_fp_ess": 1.575811654745481,
+        "val_tp_ess": 1.0021753885590803,
+        "val_annual_tp": 0.00027622417525825744,
+        "val_annual_fp": 43.78580173324701,
+        "val_purity_pct": 0.0006308493204777527,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.01% FPR (Spectroscopic Candidate)",
+        "threshold": 0.9924092317610128,
+        "n_calib_fp": 4,
+        "n_calib_tp": 5,
+        "calib_fp_ess": 1.2017581840307021,
+        "calib_tp_ess": 1.01148950115561,
+        "n_val_fp": 4,
+        "n_val_tp": 0,
+        "val_fp_ess": 1.3794890403877211,
+        "val_tp_ess": 0.0,
+        "val_annual_tp": 0.0,
+        "val_annual_fp": 40.84518553624247,
+        "val_purity_pct": 0.0,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      }
+    ],
+    "14d": [
+      {
+        "name": "10% FPR (Standard Broker)",
+        "threshold": 0.6813017367708729,
+        "n_calib_fp": 525,
+        "n_calib_tp": 427,
+        "calib_fp_ess": 170.680429456302,
+        "calib_tp_ess": 13.015761450742398,
+        "n_val_fp": 592,
+        "n_val_tp": 422,
+        "val_fp_ess": 170.0438231973599,
+        "val_tp_ess": 23.410130168317583,
+        "val_annual_tp": 6.101607718006368,
+        "val_annual_fp": 12901.811184684628,
+        "val_purity_pct": 0.047270289287960364,
+        "thin_sample": false,
+        "clean": {
+          "fp_removed_pct": 16.296929073794452,
+          "tp_retained_pct": 96.07455531224217,
+          "purity_before_pct": 0.047270289287960364,
+          "purity_after_pct": 0.054253143859705436
+        },
+        "noisy": {
+          "fp_removed_pct": 16.561441545053235,
+          "tp_retained_pct": 94.60630615641226,
+          "purity_before_pct": 0.047270289287960364,
+          "purity_after_pct": 0.05359374155659483
+        },
+        "z_window": [
+          0.31478091255327756,
+          1.3786661392395159
+        ]
+      },
+      {
+        "name": "1% FPR (Low Contamination)",
+        "threshold": 0.9181987549396833,
+        "n_calib_fp": 98,
+        "n_calib_tp": 96,
+        "calib_fp_ess": 21.040352947271245,
+        "calib_tp_ess": 7.1960181688813645,
+        "n_val_fp": 103,
+        "n_val_tp": 100,
+        "val_fp_ess": 28.913349737810243,
+        "val_tp_ess": 7.616917207777515,
+        "val_annual_tp": 2.447636041365421,
+        "val_annual_fp": 1498.080263373188,
+        "val_purity_pct": 0.16311832937730725,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.1% FPR (Strict Filter)",
+        "threshold": 0.9803704116677653,
+        "n_calib_fp": 30,
+        "n_calib_tp": 16,
+        "calib_fp_ess": 4.1518599876422355,
+        "calib_tp_ess": 1.329510783298382,
+        "n_val_fp": 31,
+        "n_val_tp": 29,
+        "val_fp_ess": 4.494209241712155,
+        "val_tp_ess": 1.737676376753221,
+        "val_annual_tp": 0.7628412534355611,
+        "val_annual_fp": 151.88325772450867,
+        "val_purity_pct": 0.4997450039950144,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.01% FPR (Spectroscopic Candidate)",
+        "threshold": 0.9995076567763224,
+        "n_calib_fp": 4,
+        "n_calib_tp": 2,
+        "calib_fp_ess": 1.3826585094812789,
+        "calib_tp_ess": 1.0041567888674399,
+        "n_val_fp": 7,
+        "n_val_tp": 5,
+        "val_fp_ess": 2.2268855875264943,
+        "val_tp_ess": 1.589012206008065,
+        "val_annual_tp": 0.004048971177567771,
+        "val_annual_fp": 50.31661543572659,
+        "val_purity_pct": 0.008046338865534216,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      }
+    ],
+    "30d": [
+      {
+        "name": "10% FPR (Standard Broker)",
+        "threshold": 0.6712720796679651,
+        "n_calib_fp": 543,
+        "n_calib_tp": 438,
+        "calib_fp_ess": 154.32549146726637,
+        "calib_tp_ess": 10.93393624947623,
+        "n_val_fp": 624,
+        "n_val_tp": 445,
+        "val_fp_ess": 178.0570308652379,
+        "val_tp_ess": 23.515892066038862,
+        "val_annual_tp": 4.414861182682697,
+        "val_annual_fp": 13392.247133085513,
+        "val_purity_pct": 0.03295493447973539,
+        "thin_sample": false,
+        "clean": {
+          "fp_removed_pct": 21.21137396543694,
+          "tp_retained_pct": 78.89077642907709,
+          "purity_before_pct": 0.03295493447973539,
+          "purity_after_pct": 0.03299764684709377
+        },
+        "noisy": {
+          "fp_removed_pct": 23.35096046134405,
+          "tp_retained_pct": 88.93423995912826,
+          "purity_before_pct": 0.03295493447973539,
+          "purity_after_pct": 0.038234885544740575
+        },
+        "z_window": [
+          0.3677094182003186,
+          1.3136757879802374
+        ]
+      },
+      {
+        "name": "1% FPR (Low Contamination)",
+        "threshold": 0.9331256843391805,
+        "n_calib_fp": 106,
+        "n_calib_tp": 100,
+        "calib_fp_ess": 18.074177126226836,
+        "calib_tp_ess": 5.942591467525014,
+        "n_val_fp": 105,
+        "n_val_tp": 105,
+        "val_fp_ess": 18.257207992416653,
+        "val_tp_ess": 5.3203219141449125,
+        "val_annual_tp": 1.1331775166636628,
+        "val_annual_fp": 914.3557382131193,
+        "val_purity_pct": 0.12377839831740063,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.1% FPR (Strict Filter)",
+        "threshold": 0.997412495852904,
+        "n_calib_fp": 24,
+        "n_calib_tp": 19,
+        "calib_fp_ess": 6.366101877648985,
+        "calib_tp_ess": 7.33445439955024,
+        "n_val_fp": 27,
+        "n_val_tp": 16,
+        "val_fp_ess": 7.679632500176339,
+        "val_tp_ess": 3.487157163573161,
+        "val_annual_tp": 0.013505939488229545,
+        "val_annual_fp": 164.31767986987745,
+        "val_purity_pct": 0.008218731838214366,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.01% FPR (Spectroscopic Candidate)",
+        "threshold": 0.9996208368754842,
+        "n_calib_fp": 7,
+        "n_calib_tp": 7,
+        "calib_fp_ess": 2.123175365846924,
+        "calib_tp_ess": 3.3223969048217925,
+        "n_val_fp": 3,
+        "n_val_tp": 8,
+        "val_fp_ess": 1.9022304105214194,
+        "val_tp_ess": 4.666627092209225,
+        "val_annual_tp": 0.0024849747569369285,
+        "val_annual_fp": 0.3891950981079667,
+        "val_purity_pct": 0.634439924084173,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      }
+    ],
+    "60d": [
+      {
+        "name": "10% FPR (Standard Broker)",
+        "threshold": 0.6775649903935219,
+        "n_calib_fp": 591,
+        "n_calib_tp": 504,
+        "calib_fp_ess": 160.7212159413335,
+        "calib_tp_ess": 10.784250952854478,
+        "n_val_fp": 636,
+        "n_val_tp": 453,
+        "val_fp_ess": 187.28561859209663,
+        "val_tp_ess": 24.670812212002225,
+        "val_annual_tp": 4.075992790085182,
+        "val_annual_fp": 13898.735052996746,
+        "val_purity_pct": 0.029317760103776912,
+        "thin_sample": false,
+        "clean": {
+          "fp_removed_pct": 21.517544057111017,
+          "tp_retained_pct": 93.50091739208129,
+          "purity_before_pct": 0.029317760103776912,
+          "purity_after_pct": 0.03492606915135892
+        },
+        "noisy": {
+          "fp_removed_pct": 20.676681493537718,
+          "tp_retained_pct": 85.96071868776679,
+          "purity_before_pct": 0.029317760103776912,
+          "purity_after_pct": 0.031770152252444527
+        },
+        "z_window": [
+          0.3396774563490954,
+          1.3475582023387513
+        ]
+      },
+      {
+        "name": "1% FPR (Low Contamination)",
+        "threshold": 0.9594339822127769,
+        "n_calib_fp": 120,
+        "n_calib_tp": 138,
+        "calib_fp_ess": 16.636528392511114,
+        "calib_tp_ess": 13.627995591399694,
+        "n_val_fp": 111,
+        "n_val_tp": 128,
+        "val_fp_ess": 20.921170951325973,
+        "val_tp_ess": 25.477109058462933,
+        "val_annual_tp": 0.31723418104712536,
+        "val_annual_fp": 761.1957836572266,
+        "val_purity_pct": 0.04165840551848557,
+        "thin_sample": false,
+        "clean": {
+          "fp_removed_pct": 32.75490884083353,
+          "tp_retained_pct": 94.39568236427797,
+          "purity_before_pct": 0.04165840551848557,
+          "purity_after_pct": 0.058468391378642695
+        },
+        "noisy": {
+          "fp_removed_pct": 35.33370920785869,
+          "tp_retained_pct": 94.25548844772678,
+          "purity_before_pct": 0.04165840551848557,
+          "purity_after_pct": 0.060708369029680104
+        },
+        "z_window": [
+          0.283700599079569,
+          1.547761627543832
+        ]
+      },
+      {
+        "name": "0.1% FPR (Strict Filter)",
+        "threshold": 0.9995914455535857,
+        "n_calib_fp": 17,
+        "n_calib_tp": 27,
+        "calib_fp_ess": 1.4267674505331787,
+        "calib_tp_ess": 6.9117331130769495,
+        "n_val_fp": 14,
+        "n_val_tp": 39,
+        "val_fp_ess": 1.8438028109789946,
+        "val_tp_ess": 12.04133833856462,
+        "val_annual_tp": 0.05247705347984373,
+        "val_annual_fp": 92.21228113114711,
+        "val_purity_pct": 0.056876595693053464,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      },
+      {
+        "name": "0.01% FPR (Spectroscopic Candidate)",
+        "threshold": 0.9996451449850666,
+        "n_calib_fp": 11,
+        "n_calib_tp": 24,
+        "calib_fp_ess": 1.6620128087510562,
+        "calib_tp_ess": 6.334120099862518,
+        "n_val_fp": 8,
+        "n_val_tp": 37,
+        "val_fp_ess": 1.164411682575482,
+        "val_tp_ess": 12.041314107287414,
+        "val_annual_tp": 0.05247700067863786,
+        "val_annual_fp": 2.854048998717761,
+        "val_purity_pct": 1.8054887755876194,
+        "thin_sample": true,
+        "clean": null,
+        "noisy": null
+      }
+    ]
+  }
+}
