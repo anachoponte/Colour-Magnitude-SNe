@@ -28,6 +28,10 @@
           },
           "tp_z_median": 0.9363343605552619,
           "tp_mu_median": 30.149653515269627,
+          "tp_trigger_day_median": 4.7905817620121525,
+          "fp_trigger_day_median": 2.437853907205863,
+          "tp_peakmag_err_median": 0.039171251191249805,
+          "fp_peakmag_err_median": 0.04558163975440648,
           "z_secondary_cut": {
             "z_window": [
               0.07646595501551536,
@@ -66,6 +70,10 @@
           },
           "tp_z_median": 0.8852518382687891,
           "tp_mu_median": 31.705563831575873,
+          "tp_trigger_day_median": 1.114123144900077,
+          "fp_trigger_day_median": 2.5234558503798326,
+          "tp_peakmag_err_median": 0.020128847164769096,
+          "fp_peakmag_err_median": 0.010493403343448561,
           "z_secondary_cut": {
             "z_window": [
               0.04782639157268342,
@@ -104,6 +112,10 @@
           },
           "tp_z_median": 0.6262613895525305,
           "tp_mu_median": 30.38277755993628,
+          "tp_trigger_day_median": 1.399913036810176,
+          "fp_trigger_day_median": 1.7853327830453054,
+          "tp_peakmag_err_median": 0.00728409035971171,
+          "fp_peakmag_err_median": 0.003160120541837105,
           "z_secondary_cut": {
             "z_window": [
               0.021869844291848725,
@@ -140,6 +152,10 @@
           },
           "tp_z_median": 0.10392493118912302,
           "tp_mu_median": 34.07594609863654,
+          "tp_trigger_day_median": 1.2227073636786372,
+          "fp_trigger_day_median": 1.7629824894102057,
+          "tp_peakmag_err_median": 0.000480561969505874,
+          "fp_peakmag_err_median": 0.0010365348866442268,
           "z_secondary_cut": null
         }
       ]
@@ -169,6 +185,10 @@
           },
           "tp_z_median": 0.9572521023044862,
           "tp_mu_median": 29.651638120886762,
+          "tp_trigger_day_median": 7.508748816120715,
+          "fp_trigger_day_median": 3.4896558558484685,
+          "tp_peakmag_err_median": 0.04653271073359057,
+          "fp_peakmag_err_median": 0.04376606162164856,
           "z_secondary_cut": {
             "z_window": [
               0.08076852284061257,
@@ -207,6 +227,10 @@
           },
           "tp_z_median": 0.9799481732532378,
           "tp_mu_median": 31.278164830644954,
+          "tp_trigger_day_median": 0.8035360881003726,
+          "fp_trigger_day_median": 1.6925498359050835,
+          "tp_peakmag_err_median": 0.030306222435190933,
+          "fp_peakmag_err_median": 0.009338922296826768,
           "z_secondary_cut": {
             "z_window": [
               0.0216157367919977,
@@ -245,6 +269,10 @@
           },
           "tp_z_median": 0.22887101664988121,
           "tp_mu_median": 32.90016835404311,
+          "tp_trigger_day_median": 1.471381449864566,
+          "fp_trigger_day_median": 1.1589743314980296,
+          "tp_peakmag_err_median": 0.0022758980219789284,
+          "fp_peakmag_err_median": 0.0008299510894375157,
           "z_secondary_cut": {
             "z_window": [
               0.0095645591835333,
@@ -283,6 +311,10 @@
           },
           "tp_z_median": 0.14597711377777187,
           "tp_mu_median": 32.443358111392286,
+          "tp_trigger_day_median": 0.7332532126820297,
+          "fp_trigger_day_median": 0.6272346310433932,
+          "tp_peakmag_err_median": 0.00032166778519912326,
+          "fp_peakmag_err_median": 0.0003708247116955151,
           "z_secondary_cut": {
             "z_window": [
               0.007279910639594504,
@@ -327,6 +359,10 @@
           },
           "tp_z_median": 0.9653322166869085,
           "tp_mu_median": 28.387345514554006,
+          "tp_trigger_day_median": 5.583409807388913,
+          "fp_trigger_day_median": 4.1668193056902965,
+          "tp_peakmag_err_median": 0.04983870231773546,
+          "fp_peakmag_err_median": 0.039465829939957627,
           "z_secondary_cut": {
             "z_window": [
               0.05269569015867395,
@@ -365,6 +401,10 @@
           },
           "tp_z_median": 0.5712732542645858,
           "tp_mu_median": 29.283523568126135,
+          "tp_trigger_day_median": 1.4579340800203986,
+          "fp_trigger_day_median": 3.0458030188638077,
+          "tp_peakmag_err_median": 0.007256266567271316,
+          "fp_peakmag_err_median": 0.0042846852729812365,
           "z_secondary_cut": {
             "z_window": [
               0.014235352662225755,
@@ -403,6 +443,10 @@
           },
           "tp_z_median": 0.2960933223144016,
           "tp_mu_median": 30.247813440878357,
+          "tp_trigger_day_median": 1.473428702534875,
+          "fp_trigger_day_median": 1.8355106505132426,
+          "tp_peakmag_err_median": 0.001350226020351992,
+          "fp_peakmag_err_median": 0.0006245281283210357,
           "z_secondary_cut": {
             "z_window": [
               0.010366106288311666,
@@ -441,6 +485,10 @@
           },
           "tp_z_median": 0.2753582435065606,
           "tp_mu_median": 31.193343158982806,
+          "tp_trigger_day_median": 2.0441682379241684,
+          "fp_trigger_day_median": 2.043550083275477,
+          "tp_peakmag_err_median": 0.0013251446467137126,
+          "fp_peakmag_err_median": 0.00012518583865124973,
           "z_secondary_cut": {
             "z_window": [
               0.011483084829062138,
@@ -485,6 +533,10 @@
           },
           "tp_z_median": 0.9219673013275964,
           "tp_mu_median": 29.11223671628054,
+          "tp_trigger_day_median": 5.127430265332805,
+          "fp_trigger_day_median": 5.883889756706898,
+          "tp_peakmag_err_median": 0.03636177676971661,
+          "fp_peakmag_err_median": 0.03382340562931935,
           "z_secondary_cut": {
             "z_window": [
               0.0323289986755432,
@@ -523,6 +575,10 @@
           },
           "tp_z_median": 0.4952208168397477,
           "tp_mu_median": 31.703582038890595,
+          "tp_trigger_day_median": 2.5464306940521055,
+          "fp_trigger_day_median": 4.777670441202645,
+          "tp_peakmag_err_median": 0.005782922924989458,
+          "fp_peakmag_err_median": 0.006141655917679841,
           "z_secondary_cut": {
             "z_window": [
               0.009934569797442566,
@@ -561,6 +617,10 @@
           },
           "tp_z_median": 0.5004739464831576,
           "tp_mu_median": 32.214803760335116,
+          "tp_trigger_day_median": 2.776732501861261,
+          "fp_trigger_day_median": 2.9612751560016477,
+          "tp_peakmag_err_median": 0.006038049318560874,
+          "fp_peakmag_err_median": 0.0005859209582164045,
           "z_secondary_cut": {
             "z_window": [
               0.00680973785245993,
@@ -599,6 +659,10 @@
           },
           "tp_z_median": 0.8206300018631606,
           "tp_mu_median": 31.23627670567786,
+          "tp_trigger_day_median": -5.092418502642734,
+          "fp_trigger_day_median": 1.9131272458240953,
+          "tp_peakmag_err_median": 0.017910319159588975,
+          "fp_peakmag_err_median": 0.0007294412317842531,
           "z_secondary_cut": {
             "z_window": [
               0.03654116014839192,
@@ -643,6 +707,10 @@
           },
           "tp_z_median": 0.8056360131725402,
           "tp_mu_median": 29.824431189122972,
+          "tp_trigger_day_median": 5.119868454814423,
+          "fp_trigger_day_median": 6.071115801183623,
+          "tp_peakmag_err_median": 0.022564652201187443,
+          "fp_peakmag_err_median": 0.02956882640135493,
           "z_secondary_cut": {
             "z_window": [
               0.026017995584220195,
@@ -681,6 +749,10 @@
           },
           "tp_z_median": 0.511543121664365,
           "tp_mu_median": 32.53878543838779,
+          "tp_trigger_day_median": 2.588481942562794,
+          "fp_trigger_day_median": 4.467207475863159,
+          "tp_peakmag_err_median": 0.0061719660368341756,
+          "fp_peakmag_err_median": 0.004545012632575674,
           "z_secondary_cut": {
             "z_window": [
               0.012676518439172193,
@@ -719,6 +791,10 @@
           },
           "tp_z_median": 0.7204026322168318,
           "tp_mu_median": 33.41732313819836,
+          "tp_trigger_day_median": 1.8006667241170362,
+          "fp_trigger_day_median": 2.5704924534535776,
+          "tp_peakmag_err_median": 0.01141115066955323,
+          "fp_peakmag_err_median": 0.0006699011007598795,
           "z_secondary_cut": {
             "z_window": [
               0.011696342174333924,
@@ -757,6 +833,10 @@
           },
           "tp_z_median": 0.8852518382687891,
           "tp_mu_median": 35.05300970403478,
+          "tp_trigger_day_median": -14.755076711466245,
+          "fp_trigger_day_median": 2.617529056527322,
+          "tp_peakmag_err_median": 0.01732966005118433,
+          "fp_peakmag_err_median": 0.0013118404355317468,
           "z_secondary_cut": {
             "z_window": [
               0.08835081899464854,
