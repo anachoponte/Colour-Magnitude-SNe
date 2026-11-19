@@ -371,8 +371,8 @@ print(f"corr(second-image epoch, physical delay) = {r_delay:+.4f}   (want >> 0)"
 print(f"corr(second-image epoch, magnification)  = {r_mu:+.4f}   (want < 0, delay ~ mu^-3)")
 
 lo, hi = magnifications < 10, magnifications > 40
-print(f"median epoch, mu<10 : {np.median(time_delays[lo]):+7.2f} d  (n={lo.sum()})")
-print(f"median epoch, mu>40 : {np.median(time_delays[hi]):+7.2f} d  (n={hi.sum()})")
+print(f"median epoch, mu<10 : {weighted_quantile(time_delays[lo], weights_l[lo]):+7.2f} d  (n={lo.sum()})")
+print(f"median epoch, mu>40 : {weighted_quantile(time_delays[hi], weights_l[hi]):+7.2f} d  (n={hi.sum()})")
 print(f"physical delay range: {timdel.min():.3f} to {timdel.max():.1f} d")
 
 if r_delay < 0.5:
@@ -439,8 +439,8 @@ for thr in [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0]:
     med = weighted_quantile(time_delays[m], weights_l[m])
     print(f"{thr:>10.0f} d {100 * m.mean():>7.1f}% {100 * frac:>15.1f}% {med:>16.2f} d")
 
-print(f"\\nmedian physical delay: {np.median(timdel):.2f} d; "
-      f"{100 * np.mean(timdel < 1):.0f}% are under 1 day")
+print(f"\\nmedian physical delay: {weighted_quantile(timdel, weights_l):.2f} d; "
+      f"{100 * weighted_fraction(timdel < 1, weights_l):.0f}% are under 1 day")
 '''),
     md("""
 ## Per-system offset between the two identification epochs
