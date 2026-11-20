@@ -341,15 +341,31 @@ def generate_with_boosting(gen, n, kind, z_range, abs_mag_avg, abs_mag_sig,
     if not pilot or n_boost <= 0:
         for e in pilot:
             e['weight'] = float(rate_weight_fn(e['z'], e['magnification']))
-        return pilot, {'n_pilot': n_pilot, 'n_boost': 0, 'flagged_cells': []}
+        return pilot, {'n_pilot': n_pilot, 'n_boost': 0, 'n_uniform_topup': 0,
+                       'total_attempted': n_pilot, 'flagged_cells': []}
 
     pilot_rw = np.array([rate_weight_fn(e['z'], e['magnification']) for e in pilot])
     flagged = diagnose_sparse_cells(pilot, pilot_rw, band_pair_keys, magnitude_key,
                                     n_bins, ess_floor_fraction)
     if not flagged:
-        for e, w in zip(pilot, pilot_rw):
-            e['weight'] = float(w)
-        return pilot, {'n_pilot': n_pilot, 'n_boost': 0, 'flagged_cells': []}
+        # No sparse cells to patch. Spend the remaining budget on more uniform
+        # draws rather than returning early: the caller asked for ``n`` attempts
+        # and ``rate_weight_fn`` is normalised by ``n``, so stopping at
+        # ``n_pilot`` makes every weight too small by ``n_pilot / n`` (15% at
+        # the production ``pilot_frac=0.85``). Because whether any cell is
+        # flagged varies by class, that error is *asymmetric across classes*
+        # and therefore distorts relative rates and composition statistics,
+        # not just an overall normalisation.
+        topup = gen.generate_many(n_boost, kind, z_range, abs_mag_avg, abs_mag_sig,
+                                  magnification_range=magnification_range,
+                                  mjd_range=mjd_range, mjd_high=mjd_high)
+        all_pilot = pilot + topup
+        for e in all_pilot:
+            e['weight'] = float(rate_weight_fn(e['z'], e['magnification']))
+        return all_pilot, {'n_pilot': n_pilot, 'n_boost': 0,
+                           'n_uniform_topup': n_boost,
+                           'total_attempted': n_pilot + n_boost,
+                           'flagged_cells': []}
 
     deficits = np.array([max(cell['floor'] - cell['ess'], 1e-9) for cell in flagged])
     shares = deficits / deficits.sum()
@@ -393,7 +409,15 @@ def generate_with_boosting(gen, n, kind, z_range, abs_mag_avg, abs_mag_sig,
         p_boost_total += f_boost_per_cell[cell_idx] * _proposal_density(proposal, all_z, all_mu, lensed)
 
     p_mix_relative = np.maximum(f_pilot + p_boost_total / p_uniform_const, 1e-12)
+    # ``rate_weight_fn`` carries 1/(n * p_uniform) from the caller's
+    # ``n_attempted = n``, but ``boost_counts = np.maximum(1, ...)`` can sum to
+    # more than ``n_boost`` when many cells are flagged, so the attempts
+    # actually made may exceed ``n``. Correct to the realised count.
+    attempt_correction = n / float(total_attempted)
     for e, z_i, mu_i, pm_rel in zip(all_events, all_z, all_mu, p_mix_relative):
-        e['weight'] = float(rate_weight_fn(z_i, mu_i) / pm_rel)
+        e['weight'] = float(rate_weight_fn(z_i, mu_i) * attempt_correction / pm_rel)
 
-    return all_events, {'n_pilot': n_pilot_attempted, 'n_boost': n_boost_attempted, 'flagged_cells': flagged}
+    return all_events, {'n_pilot': n_pilot_attempted, 'n_boost': n_boost_attempted,
+                        'n_uniform_topup': 0, 'total_attempted': total_attempted,
+                        'attempt_correction': attempt_correction,
+                        'flagged_cells': flagged}
