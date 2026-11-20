@@ -1,5 +1,31 @@
 # Rate-Matched Importance-Sampling Proposal — Design
 
+> ## ⚠ STATUS: SUPERSEDED — DO NOT BUILD FROM THIS DOCUMENT
+>
+> The mechanism below (approach 2: a proposal matched to the **rate density**)
+> was invalidated by `scripts/spike_matched_proposal_gain.py` (BlueBEAR job
+> `62201604`) **after** this document was written and before any `cmsne/` code
+> was touched. Measured in ESS per generation **attempt**, it *loses* for 8 of
+> the 10 classes — by `16x` for `lensed_sn2l` — because it concentrates draws
+> where the rate density is large and detection efficiency collapses. It loses
+> on the background pool too (`unlensed_Ia` `0.63x`), which is the pool gating
+> the FPR budgets this work exists to unlock.
+>
+> `scripts/spike_proposal_ceiling.py` (job `62201753`) identifies the correct
+> target: the variance-optimal proposal under a detection cut is
+> `p ∝ rate · √ε` by Cauchy-Schwarz, where `ε(z, mu)` is detection efficiency —
+> not `rate`, and not `rate · ε`. It wins for all 10 classes by `3.2x`
+> (`unlensed_sn2n`) to `60.4x` (`lensed_sn2l`), including `3.2–11.7x` on the
+> background pool. Those are ceilings assuming perfect knowledge of `ε`; a real
+> implementation must estimate it from the pilot stage and regularise it.
+>
+> A replacement design is **not yet written and not yet approved**. Everything
+> below is retained for the record: the Problem, Measured impact, Intent,
+> Goals, Non-goals, Anti-goals and Constraints sections remain accurate and a
+> successor should reuse them. **Approaches, Mechanics, Testing and Expected
+> outcome describe the dead proposal and must not be implemented.**
+
+
 ## Problem
 
 Every simulated population in this project is drawn from a **uniform** proposal
