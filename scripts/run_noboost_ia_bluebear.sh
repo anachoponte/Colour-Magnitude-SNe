@@ -34,7 +34,13 @@ module load scikit-learn/1.0.1-foss-2021b
 source /rds/projects/s/smithgp-lensed-transients/andres/virtual-environments/cmsne-icelake/bin/activate
 
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
-echo "host=$(hostname)  commit=$(git rev-parse --short HEAD 2>/dev/null || echo ?)"
+# NOTE: the sibling wrappers default to baseline_v5.3.2_10yrs.db, which is the
+# DB results/dual_59297152 was generated with (per its manifest.json) but which
+# NO LONGER EXISTS on disk -- only v5.3.5 is present. Any regeneration therefore
+# uses a different survey cadence and is NOT directly comparable to that baseline
+# on absolute rates. Flagged rather than silently substituted.
+export CMSNE_OPSIM_DB="${CMSNE_OPSIM_DB:-/rds/projects/s/smithgp-lensed-transients/andres/opsim_data/baseline_v5.3.5_10yrs.db}"
+echo "host=$(hostname)  commit=$(git rev-parse --short HEAD 2>/dev/null || echo ?)  db=$CMSNE_OPSIM_DB"
 
 OUT="${1:-results/noboost_ia_$SLURM_JOB_ID}"
 N="${2:-100000}"
