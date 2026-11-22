@@ -6,6 +6,84 @@ the uniform proposal it replaced for 8 of 10 classes. That document is retained
 with a superseded banner; its Problem, Measured impact and Constraints sections
 remain accurate and are carried forward here.
 
+> **STATUS — REJECTED, 2026-11-22.** The objective below, `p ∝ rate·√ε`, was
+> measured and does **not** serve its stated purpose. It minimises the variance
+> of a class's TOTAL annual detection rate, but the quantity blocking the strict
+> FPR budgets is the extreme **tail** of the background *score* distribution —
+> and the two are anti-correlated. `rate·√ε` chases the bright, common,
+> easily-detected bins; the unlensed mimics of a lensed Ia live in a rare, faint
+> corner. Optimising the total actively drains the tail.
+>
+> `scripts/spike_tail_transfer.py` (BlueBEAR job `62298093`, target
+> `lensed_ia`, epoch `+60d`, 24 bins, val split), ESS per attempt relative to
+> uniform:
+>
+> | background score tail | `gain_global` | `gain_tail` | tail-aware ceiling |
+> |---|---|---|---|
+> | top 10% (438 raw) | 1.65x | 1.70x | 2.89x |
+> | top 1% (80 raw) | 1.65x | 1.23x | 11.61x |
+> | top 0.1% (45 raw) | 1.65x | **0.75x** | 21.63x |
+>
+> At the 0.1% tail the proposal is **worse than uniform**. The reading rule was
+> committed to in advance and is printed by the spike itself: "`gain_tail` near
+> 1 => it does not [reach the tail], and the proposal should target
+> `rate*sqrt(eps*f)` instead."
+>
+> **Two further corrections to claims made in this document.**
+>
+> 1. The background gain is **1.65x pooled, not the 3.4x** reported from
+>    `spike_proposal_ceiling.py`. That figure came from `unlensed_Ia`, one of
+>    only two classes that took the boosted path and whose weights carried the
+>    `n_attempted` deficit fixed in `0489253`. The clean per-class values are
+>    1.42x–1.53x.
+> 2. The *Expected outcome* section's projection — that this makes the 0.1% FPR
+>    budget "measurable for the first time with no extra generation" — is
+>    **false on its own terms**. 1.65x moves calibration background ESS from
+>    `1,856` to `~3,060`, and the measurable floor from 0.54% to `~0.33%`. Not
+>    0.1%.
+>
+> **What was done instead.** Brute-force generation at 15x
+> (`scripts/run_brute15_bluebear.sh`, job `62368493`, 1.5M attempts/class,
+> ~55 CPU-hours). The floor is `MIN_SAMPLE_FOR_STATS / ESS_background`, which is
+> linear in `N` at fixed proposal, so the required multiple is arithmetic rather
+> than research. See `docs/session_writeup.md`, Finding 7.
+>
+> **Retained and still valid:** the *Problem* section; the *Prior art*
+> bibliography (verified, and written for the paper); and `cmsne/proposals.py`
+> as a *mechanism* — a 2-D grid proposal with a defensive mixture. It is
+> committed, tested, and wired into nothing.
+>
+> **Two design defects that were identified but never fixed**, and which must be
+> addressed before any revival:
+>
+> - **The proposal density is applied twice.** `rate_weight_fn` already carries
+>   `1/(n · p_uniform)`, and the boost mixture is expressed *relative to*
+>   `p_uniform`; they cancel by design. The fix is to keep the relative
+>   formulation and let only the scalar `p_uniform_const` become a per-event
+>   `p_pilot(z, μ)`, in both places.
+> - **The unbiasedness gate is unusable.** It routes through a refit classifier,
+>   whose KDE bandwidths depend on ESS (`cmsne/classifier.py`,
+>   `_scott_bandwidths` calls `effective_sample_size`). Raising ESS therefore
+>   *necessarily* narrows bandwidths and moves the decision boundary, so the
+>   gate as written would block a change that is working correctly.
+>
+> **If revived**, the tail-aware objective is `p ∝ rate·√(ε·f)`, where `f_b` is
+> the fraction of bin `b`'s detections landing in the score tail (restricting
+> the estimator to a tail multiplies each bin by `f_b`, i.e. the global formula
+> with `ε → ε·f`). Three obstacles, the third structural:
+>
+> 1. The 21.63x ceiling is fitted to **45 raw events** across 5 classes and 24
+>    bins each. `f` is far noisier than `ε` ever was — `unlensed_sn2n` reads
+>    0.13x at the 1% tail, which is instability, not signal. No cross-fit
+>    (estimate `f` on half the tail, evaluate on the other half) has been run.
+> 2. The ceiling assumes perfect knowledge of `f`.
+> 3. **`f` depends on a fitted classifier.** `ε` is a property of the universe
+>    and the cadence — fixed, and unchanged by the proposal. `f` is a property
+>    of a model trained on a sample drawn from the proposal, so the loop
+>    `proposal → sample → classifier → f → proposal` closes. It can be broken by
+>    freezing the stage-1 classifier and never refitting on stage-2 data, at the
+>    cost of reporting with the classifier trained on the smaller uniform pilot.
+
 ## Problem
 
 Every simulated population in this project is drawn from a **uniform** proposal
@@ -339,7 +417,12 @@ Validation (BlueBEAR, sbatch only):
 - `scripts/diag_calib_resolution.py` re-run on the new output, against the
   table above as baseline.
 
-## Expected outcome, and what it does not solve
+## Expected outcome, and what it does not solve — FALSIFIED
+
+The projection in this section was measured and did not hold; see the STATUS
+banner at the top of this document. Retained as the record of what was
+predicted, against which the measurement should be read.
+
 
 `spike_proposal_ceiling.py` measured ceilings of 3.2x–60.4x in ESS per attempt,
 assuming perfect knowledge of `eps`. Realised gains will be **lower**: `eps_hat`

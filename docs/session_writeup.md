@@ -18,6 +18,8 @@ Across this session, we audited, visualised, and substantially upgraded the LSST
 
 8. **Built the Ranked Candidate List the Previous Point Recommends, and Found Its Real Limit Is Simulation Sampling, Not the Classifier (`rank_candidates.py`):** Point 7 argued the classifier's value is a ranked list at a tunable FPR budget; `scripts/rank_candidates.py` builds it, on a proper three-way `train`/`calib`/`val` split, for all 6 targets (BlueBEAR job `62176559`). Two things came out of it. First, the **lift curve, not the FPR-budget table, is the deliverable**: a follow-up programme has a number of nights, not an FPR budget, and "if I review `N` candidates a year, how many lensed SNe do I get?" needs only the ordering -- no threshold calibration at all. Rate-weighted, `lensed_Ia` reviewing `10,000` candidates/yr (`10%` of the alert stream) recovers `~4/yr` of the `10/yr` that exist, and the ranking concentrates `~63x` more lensed Ia into the top `100/yr` than random selection would. `all_lensed` is far weaker at the sharp end (`1.6-9.8x` vs `38-83x`), because aggregating the four CC subtypes dilutes the top of the list with the ones the classifier separates worst -- for a small follow-up budget, targeting `lensed_Ia` specifically is the better configuration. Second, **of the 120 cumulative operating points (6 targets x 5 epochs x 4 budgets), the 38 that are statistically clean are *all* at the `10%` or `1%` budget; not one clean operating point exists at `0.1%` or `0.01%`, for any target at any epoch.** The script now reports this honestly in two distinct forms rather than hiding it -- `NOT RESOLVABLE` where the `calib` background ESS (`~1,856`, against a `0.54%` true FPR floor) cannot place the threshold at all, and `THIN SAMPLE` where it can but the yield past it rests on too few effective events (flagged if **any** of `n_tp`, `n_fp`, `tp_ess`, `fp_ess` falls below `MIN_SAMPLE_FOR_STATS = 10`). An earlier version snapped to the nearest achievable ROC point via `np.argmin(|fpr - target|)` and reported it as though the budget had been met; that was a reporting bug, fixed. The root cause is **importance-sampling proposal mismatch, not a classifier limit** -- every population is drawn uniformly in `(z, mu)` against a `mu^-3` target, giving `0.6-2.9%` ESS/raw on signal pools with the top `1%` of events carrying `55-62%` of all weight ([issue #37](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/37)). This is **variance, not bias**: every number in Findings 2, 5 and 6 is unbiased, just noisier than its raw event count suggests. Two throwaway spikes measured the fix: a proposal matched to the **rate density** -- the intuitive answer -- *loses* for 8 of 10 classes including the background pool that gates the FPR budgets, because it concentrates draws where events are too faint to detect; the variance-optimal `p ∝ rate * sqrt(eps)` (Cauchy-Schwarz, `eps` = detection efficiency) wins for all 10 by `3.2-60.4x`. The spikes killed an already-written design for the losing proposal before any production code was touched. **Nothing in `cmsne/` has been changed and no number in this document depends on that work landing** -- see Findings 6 and 6a.
 
+9. **Established That the Strict FPR Budgets Are a Sample-Size Problem With a Known Price, Killed a Second Proposal Design With a Spike, and Generated the Data at 15x:** Point 8 attributed the missing `0.1%`/`0.01%` operating points to importance-sampling proposal mismatch. That was right about the cause and wrong about the cure. The measurable-FPR floor is simply `MIN_SAMPLE_FOR_STATS / ESS_background` -- `10/1,856 = 0.54%`, exactly where Finding 6's clean points stop -- and since ESS is linear in `N` at fixed proposal, the required generation multiple is arithmetic: `5.4x` for `0.1%` at ten effective events, `13.5x` at twenty-five, `54x` at a hundred. The `p ∝ rate*sqrt(eps)` design point 8 recommended was then **measured and rejected**: it optimises a class's *total* detection rate, but a strict FPR threshold is set by the extreme *tail* of the background score distribution, and the two are anti-correlated. `scripts/spike_tail_transfer.py` (83 seconds, job `62298093`) measured its tail gain at **`0.75x` -- worse than uniform -- at the `0.1%` tail**, against `1.65x` globally; and the `3.4x` background gain point 8 quoted was itself boost-contaminated, the clean value being `1.42x`. The tail-aware alternative `p ∝ rate*sqrt(eps*f)` offers a `21.63x` ceiling but was not pursued: `f` depends on a fitted classifier, closing a circularity categorically harder than `eps`'s, and the ceiling rests on 45 raw events. **Brute force was chosen instead**, targeting `25` effective events at a `0.1%` cut (`20%` Poisson error) -- which *clears* the field precedent rather than matching it, since the Strong Lens Finding Challenge's headline `TPR_10` metric and HOLISMOKES XXI Part II both operate at `~10` events and quote no uncertainty at all. BlueBEAR job `62368493` generated `1.5M` attempts/class across all 10 classes (`7h45m`, `~55` CPU-hours, `9.5 GB`), **completed and intact**. The downstream analysis has **not** run: the BlueBEAR `/rds` filesystem is returning `ENOSPC` on all writes -- including to a home directory at `4.8%` of quota, and including `rm` -- which killed two analysis jobs before they started. Reads are unaffected. No number in this document depends on that analysis landing; see Finding 7.
+
 ---
 
 ## 2. Summary of All Code Edits & New Scripts
@@ -58,6 +60,19 @@ Across this session, we audited, visualised, and substantially upgraded the LSST
    - Scoping diagnostic for Finding 6's FPR floor: reads the result pickles only (no classifier fit) and reports per-pool ESS, ESS/raw, weight concentration, and the generation multiple each FPR budget would require. See Finding 6a.
 12. **Throwaway proposal spikes** -- `scripts/spike_matched_proposal_gain.py`, `scripts/spike_proposal_ceiling.py` (wrappers `scripts/run_spike_gain_bluebear.sh`, `scripts/run_spike_ceiling_bluebear.sh`)
    - Explicitly labelled throwaway. Measure **ESS per generation attempt** (the compute-relevant metric) under uniform, `rate`, `rate*sqrt(eps)` and `rate*eps` proposals, recovering `eps` from the existing uniform baseline's bin counts. Their result killed an already-written design before any `cmsne/` code was touched. See Finding 6a. Not part of any production path.
+
+13. **`scripts/spike_tail_transfer.py`** (SLURM wrapper: `scripts/run_spike_tail_bluebear.sh`) -- throwaway
+   - The decisive spike, and the one that killed the *second* proposal design. Asks whether the `(z, mu)` ESS gain reaches the background **score** tail that actually sets a strict FPR threshold, by noting that restricting the estimator to a tail multiplies each bin's contribution by `f_b` (the fraction of that bin's detections in the tail) -- so `ESS_tail` is the global formula with `eps -> eps*f`, and the tail-optimal proposal is `rate*sqrt(eps*f)`. Reports `gain_global`, `gain_tail` and the tail-aware ceiling per class and pooled, with the reading rule printed by the script itself so it could not be rationalised after the fact. Result: `0.75x` at the `0.1%` tail. See Finding 7. Not part of any production path.
+
+14. **`cmsne/proposals.py`** (new module) + the `generate_with_boosting` weight fix in `cmsne/importance_sampling.py`
+   - `DetectionAwareProposal`: a 2-D piecewise-constant grid over `(z, mu)` with log-spaced `mu` edges, Beta-shrunk per-cell efficiency estimates, count-weighted smoothing, and a defensive uniform mixture (Hesterberg 1995; Owen & Zhou 2000) bounding weights at `1/alpha`. **Committed, tested, and wired into nothing** -- the objective it was built to serve was rejected (Finding 7). Retained as a mechanism, not a decision.
+   - Separately, a **real 15% weight deficit** was found and fixed in `generate_with_boosting`: when no sparse cells were flagged it returned after only `n_pilot` attempts, while `rate_weight_fn` had already been normalised by `n_attempted = n`. Every weight was therefore low by `n_pilot/n` (`15%` at the production `pilot_frac=0.85`). The error is **asymmetric across classes** -- in `results/dual_59297152` only `lensed_Ia` and `unlensed_Ia` flagged cells and were weighted correctly; the other eight took the early return -- so it distorts relative rates and hence composition statistics. Finding 5's `unlensed_Ia`-at-`66.6%` figure moves under this fix and needs recomputing. Closing this also exposed a hole in the test harness, where a mid-file `sys.exit(1)` meant failures in the tail block never failed the suite.
+
+15. **`scripts/run_brute15_bluebear.sh`** -- the 15x production run
+   - `1,500,000` attempts/class across all 10 classes as a 10-way array, targeting `25` effective background events at a `0.1%` FPR cut (`20%` Poisson error). Carries the floor derivation, the precision table, and the literature precedent (Metcalf et al. 2019's `TPR_10`; HOLISMOKES XXI Part II's `O(10^-4)`) as a header comment, so the choice of `15x` is auditable from the script itself. Job `62368493`: completed, `7h45m`, `~55` CPU-hours, `9.5 GB`. Also records that `baseline_v5.3.2_10yrs.db` no longer exists on disk, so this run's absolute rates are not comparable to the baseline's.
+
+16. **`scripts/diag_baseline_uniformity.py`** (SLURM wrapper: `scripts/run_baseline_uniformity_bluebear.sh`) and **`scripts/run_noboost_ia_bluebear.sh`**
+   - The first reads pickles only and reports `n_pilot`, `n_boost` and `total_attempted` per class -- it is what established that only `lensed_Ia` and `unlensed_Ia` took the boosted path, and therefore which spike results were contaminated. The second regenerates those two classes with `--no-boost` (`pilot_frac=1.0`) for a clean uniform-proposal measurement (job `62299092`, `32` minutes).
 
 ---
 
@@ -249,6 +264,128 @@ Brute force is expensive: reaching the `0.1%` budget needs `~5.4x` more backgrou
 - The variance-optimal proposal under a detection cut is `p ∝ rate * sqrt(eps)` by Cauchy-Schwarz, where `eps(z, mu)` is detection efficiency -- not `rate`, and not `rate * eps`. It **wins for all 10 classes**, by `3.2x` (`unlensed_sn2n`) to `60.4x` (`lensed_sn2l`), including `3.2-11.7x` on the background pool.
 
 These are *ceilings*, assuming perfect knowledge of `eps`; a real implementation must estimate it from the pilot stage and regularise it, and will realise less. Sanity check: the spike's uniform baseline reproduces the measured values well for the Ia classes (`unlensed_Ia` `0.0682` vs `0.0682`) but only within `~2-3x` for the CC subtypes, so the CC factors are order-of-magnitude. Design work is tracked in `docs/superpowers/specs/2026-11-20-matched-importance-proposal-design.md` and [issue #37](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/37); **nothing in `cmsne/` has been changed**, and no number anywhere in this document depends on that work landing.
+
+---
+
+### Finding 7: The `0.1%` FPR Budget Is a Sample-Size Problem With a Known Price -- Why the Clever Proposal Failed and Brute Force Won (`spike_tail_transfer.py`, `run_brute15_bluebear.sh`)
+
+Finding 6 established that no operating point below the `1%` FPR budget is
+statistically clean, and attributed it to importance-sampling proposal
+mismatch ([issue #37](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/37)).
+That attribution was correct about the *cause* and wrong about the *cure*.
+
+**The floor is arithmetic, not mystery.** The finest measurable FPR is
+
+```
+FPR_floor = MIN_SAMPLE_FOR_STATS / ESS_background
+```
+
+The baseline's calibration-split background ESS of `1,856` gives
+`10 / 1,856 = 0.54%` -- exactly where Finding 6's clean operating points stop.
+Because ESS is linear in `N` at fixed proposal, the required generation
+multiple follows directly:
+
+| Effective events at threshold | Poisson error | ESS needed for `0.1%` | x baseline |
+| :--- | :---: | ---: | ---: |
+| `10` | `32%` | `10,000` | `5.4x` |
+| `25` | `20%` | `25,000` | `13.5x` |
+| `100` | `10%` | `100,000` | `54x` |
+
+**Why the detection-aware proposal was abandoned.** The variance-optimal
+proposal under noisy importance sampling is `p ∝ rate * sqrt(eps)` (see
+`docs/superpowers/specs/2026-11-20-detection-aware-importance-proposal-design.md`
+for the derivation and verified bibliography). It minimises the variance of a
+class's **total** annual detection rate. But a strict FPR threshold is set by
+the extreme **tail** of the background *score* distribution, and the two are
+anti-correlated: `rate*sqrt(eps)` concentrates attempts on bright, common,
+easily-detected bins, while the unlensed mimics of a lensed Ia occupy a rare,
+faint corner. `scripts/spike_tail_transfer.py` (job `62298093`, target
+`lensed_ia`, `+60d`, val split) measured ESS per attempt relative to uniform:
+
+| Background score tail | `gain_global` | `gain_tail` | Tail-aware ceiling | Raw events in tail |
+| :--- | :---: | :---: | :---: | ---: |
+| top `10%` | `1.65x` | `1.70x` | `2.89x` | `438` |
+| top `1%` | `1.65x` | `1.23x` | `11.61x` | `80` |
+| top `0.1%` | `1.65x` | **`0.75x`** | `21.63x` | `45` |
+
+At the `0.1%` tail the optimised proposal is **worse than uniform**. Two
+corrections to Finding 6's own account follow: the background gain is `1.65x`
+pooled, **not** the `3.4x` previously quoted (that came from `unlensed_Ia`, one
+of the two classes whose weights carried the `n_attempted` deficit fixed in
+`0489253`; clean per-class values are `1.42x-1.53x`), and `1.65x` would move the
+floor only from `0.54%` to `~0.33%` -- it does **not** unlock `0.1%`. The spike
+cost 83 seconds and killed a design that was already written.
+
+**Why not the tail-aware proposal.** The same algebra gives the tail-optimal
+proposal as `p ∝ rate * sqrt(eps * f)`, where `f_b` is the fraction of bin `b`'s
+detections landing in the tail (restricting the estimator to a tail multiplies
+each bin by `f_b`, i.e. the global formula with `eps -> eps*f`). Its ceiling is
+`21.63x`. It was not pursued because `f` depends on a **fitted classifier**,
+closing the loop `proposal -> sample -> classifier -> f -> proposal`. This is
+categorically harder than the `eps` loop: `eps` is a property of the universe and
+the cadence, fixed and unchanged by the proposal, whereas `f` is a property of a
+model trained on the proposal's own output. The loop can be broken by freezing a
+stage-1 classifier fitted on a uniform pilot and never refitting on stage-2 data
+-- at the cost of reporting with the classifier trained on the smaller sample.
+Compounding this, the `21.63x` is fitted to **45 raw events** across 5 classes
+and 24 bins each; `unlensed_sn2n` reading `0.13x` at the `1%` tail is
+instability, not signal. No cross-fit estimate was made.
+
+**What precision to target, and what the literature does.** Two standards exist,
+and they differ by an order of magnitude in cost.
+
+For an FPR used as a **selection threshold** -- this project's case -- the field
+operates at roughly ten events and does not quote an error bar. The Strong
+Gravitational Lens Finding Challenge ([Metcalf et al. 2019, A&A 625,
+A119](https://www.aanda.org/articles/aa/full_html/2019/05/aa32797-18/aa32797-18.html))
+uses `TPR_0` (highest TPR before a *single* false positive in `100,000`) and
+`TPR_10` (TPR at fewer than *ten* false positives) as its headline metrics --
+`TPR_10` is `FPR = 1e-4` at ten events, which is precisely this project's
+`MIN_SAMPLE_FOR_STATS = 10`. The closest methodological precedent,
+[HOLISMOKES XXI Part II](https://arxiv.org/html/2605.05318) (lensed SNe Ia from
+LSST-like multi-band time series), quotes its TPR at an FPR of `O(10^-4)` --
+order of magnitude only -- on a test set of `~88,600` with `~80,000` background,
+i.e. `~8` surviving events, with **no stated statistical uncertainty**.
+
+For a contamination fraction entering a **cosmology error budget**, the standard
+is far tighter: [Jones et al. 2017](https://arxiv.org/html/1611.07042.pdf) find
+`2%` core-collapse contamination shifts mean distances by `0.02-0.04` mag with
+the contamination systematic at `~29%` of the statistical error, and LSST/DES
+forecasts quote contamination to `~10%` relative on a `~1%` baseline
+([Carreres et al. 2025](https://arxiv.org/pdf/2507.00157)). That standard does
+not apply here: this project's FPR sets a follow-up triage cut, not a `w` error
+budget.
+
+**The run.** `scripts/run_brute15_bluebear.sh` targets `25` effective events at a
+`0.1%` cut (`20%` Poisson error) -- clearing the field precedent rather than
+matching it, since we would report an error bar where the comparable papers
+report none. BlueBEAR job `62368493`, `1,500,000` attempts/class across all 10
+classes as a 10-way array: **completed**, `7h45m` wall clock, `~55` CPU-hours,
+`9.5 GB` in `results/brute15_62368493`. Detection fractions track the baseline
+closely (`lensed_Ia` `32.5%` vs `34.2%`), confirming nothing pathological at the
+larger `N`. Boosting was deliberately left at the baseline `pilot_frac=0.85`:
+holding the proposal fixed is what makes the ESS-linear-in-`N` scaling valid.
+Peak RSS was `6-22 GB` against a `120 GB` request -- the fixed OpSim overhead
+dominates, so a future `54x` run needs far less memory than naively projected.
+
+**Status: the analysis on this data has not run.** Two attempts (jobs `62461638`,
+`62633153`) were killed by the scheduler at the five-minute mark because SLURM
+could not create their output files: the BlueBEAR `/rds` GPFS filesystem is
+returning `ENOSPC` on **all** writes, including to a home directory at `4.8%` of
+its `20 GB` quota (`bbquota`), and including `rm` itself. Reads are unaffected,
+so the `9.5 GB` of generated data is intact. This is a filesystem fault reported
+to BEAR support, not a quota or resource problem, and **no number in this
+document depends on the 15x analysis**; Finding 6's tables stand as measured on
+`results/dual_59297152`.
+
+**One caveat carried forward.** `results/dual_59297152` was generated with
+`baseline_v5.3.2_10yrs.db`, which no longer exists on BlueBEAR -- only `v5.3.5`
+is present. The 15x run therefore uses a different survey cadence and its
+**absolute** rates are not directly comparable to the baseline. Every class was
+regenerated, so the run is internally consistent, but the affected tables must be
+recomputed rather than compared. Finding 5's false-positive composition
+(`unlensed_Ia` at `66.6%`) additionally shifts under the `0489253` weight fix,
+which affected the eight classes that took the early-return path asymmetrically.
 
 ---
 
