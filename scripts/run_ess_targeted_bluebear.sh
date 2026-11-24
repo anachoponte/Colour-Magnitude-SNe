@@ -4,7 +4,11 @@
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=200G
+#SBATCH --mem=96G
+# 96G, not the 120G of the 15x run: that peaked at 6-22 GB RSS. The largest
+# class here (lensed_sn2p, 7.8M attempts) yields ~785k kept events against
+# lensed_Ia's 488k in that run, so ~1.6x its peak -- roughly 35 GB. 96G keeps
+# ~2.7x headroom while letting all ten array tasks schedule promptly.
 #SBATCH --constraint=icelake
 #SBATCH --array=0-9
 #SBATCH --mail-type=END,FAIL
