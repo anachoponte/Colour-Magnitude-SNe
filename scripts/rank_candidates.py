@@ -64,8 +64,8 @@ sys.path.insert(0, _ROOT)
 from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
 from cmsne.importance_sampling import effective_sample_size
 from investigate_contaminant_properties import (
-    TARGET_SIGNAL_CLASSES, TARGET_LABELS, ANNUAL_RATES, TABLE_POINTS, load_data_tagged,
-    MIN_SAMPLE_FOR_STATS,
+    TARGET_SIGNAL_CLASSES, TARGET_LABELS, TABLE_POINTS, load_data_tagged,
+    MIN_SAMPLE_FOR_STATS, annual_rates_from_data,
 )
 from validate_zcut_outofsample import split3
 
@@ -283,8 +283,10 @@ def main():
     w_calib_bg = np.array([e['weight'] for e in calib_bg])
     w_val_sig = np.array([e['weight'] for e in val_sig])
     w_val_bg = np.array([e['weight'] for e in val_bg])
-    rates = ANNUAL_RATES[args.target]
+    rates = annual_rates_from_data(args.data_dir, args.target)
     N_sig_ann, N_bg_ann = rates['N_sig'], rates['N_bg']
+    print(f'Annual rates for {args.target}: N_sig={N_sig_ann:.4g}/yr, '
+          f'N_bg={N_bg_ann:.4g}/yr (derived from {args.data_dir})')
 
     print(f'Fitting TrajectoryClassifier on train only ({len(train_sig)} signal, '
           f'{len(train_bg)} background) -- calib ({len(calib_sig)}/{len(calib_bg)}) '

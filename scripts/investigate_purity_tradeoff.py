@@ -50,10 +50,12 @@ UNLENSED_CLASSES = [c for c in CLASSES if c.startswith('unlensed_')]
 #   detectability and the lensing optical depth integral both differ from Ia's
 #   -- see https://github.com/anachoponte/Colour-Magnitude-SNe/issues/43 for
 #   the follow-up to derive it properly from cmsne.rates / summed event weights.
-ANNUAL_RATES = {
-    'all_lensed': {'N_sig': 45.0, 'N_bg': 100_000.0},
-    'lensed_ia':  {'N_sig': 10.0, 'N_bg': 100_000.0},
-}
+# SUPERSEDED as the default by annual_rates_from_data() (issue #63), which
+# derives these from the analysed run's own LTT per-event weights instead of
+# hardcoding them. The note above is kept as the provenance record for the
+# placeholder figures, which survive as the fallback (LITERATURE_ANNUAL_RATES)
+# for datasets predating per-class summaries.
+from investigate_contaminant_properties import annual_rates_from_data
 
 TABLE_POINTS = [
     ('10% FPR (Standard Broker)', 0.10),
@@ -133,8 +135,10 @@ def main():
         signal_classes = ['lensed_Ia']
         signal_label, file_suffix = 'lensed Ia', ''
 
-    rates = ANNUAL_RATES[args.target]
+    rates = annual_rates_from_data(args.data_dir, args.target)
     N_sig_ann, N_bg_ann = rates['N_sig'], rates['N_bg']
+    print(f'Annual rates for {args.target}: N_sig={N_sig_ann:.4g}/yr, '
+          f'N_bg={N_bg_ann:.4g}/yr (derived from {args.data_dir})')
     base_rate_ratio = N_sig_ann / N_bg_ann
 
     print(f'Loading data from {args.data_dir} for {signal_label}...')
