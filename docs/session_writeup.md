@@ -1,6 +1,6 @@
 # Session Writeup: Rate-Weighted Diagnostics, Purity Trade-offs, Visual Encodings, and Full-Trajectory Classifier Upgrades
 
-**Dataset:** `results/dual_59297152` on BlueBEAR (`1,000,000` simulated LSST supernovae across 10 classes: `100,000` per class for `lensed_Ia`, `lensed_sn1bc`, `lensed_sn2l`, `lensed_sn2n`, `lensed_sn2p` and their 5 `unlensed_*` counterparts, evaluated on a held-out 70/30 train/test split with physical annual LSST rate weights).
+**Dataset:** `results/dual_59297152` on BlueBEAR (`1,000,000` simulated LSST supernovae across 10 classes: `100,000` per class for `lensed_Ia`, `lensed_sn1bc`, `lensed_sn2l`, `lensed_sn2n`, `lensed_sn2p` and their 5 `unlensed_*` counterparts, evaluated on a held-out 70/30 train/test split with physical annual LSST rate weights). **Findings 7-8 use a different dataset:** `results/brute15_62368493` (`1.5M` attempts per class, OpSim `baseline_v5.3.5_10yrs.db`, three-way train/calib/val split, annual rates derived from the simulation). Their absolute rates are not comparable to Findings 1-6.
 
 ---
 
@@ -18,7 +18,9 @@ Across this session, we audited, visualised, and substantially upgraded the LSST
 
 8. **Built the Ranked Candidate List the Previous Point Recommends, and Found Its Real Limit Is Simulation Sampling, Not the Classifier (`rank_candidates.py`):** Point 7 argued the classifier's value is a ranked list at a tunable FPR budget; `scripts/rank_candidates.py` builds it, on a proper three-way `train`/`calib`/`val` split, for all 6 targets (BlueBEAR job `62176559`). Two things came out of it. First, the **lift curve, not the FPR-budget table, is the deliverable**: a follow-up programme has a number of nights, not an FPR budget, and "if I review `N` candidates a year, how many lensed SNe do I get?" needs only the ordering -- no threshold calibration at all. Rate-weighted, `lensed_Ia` reviewing `10,000` candidates/yr (`10%` of the alert stream) recovers `~4/yr` of the `10/yr` that exist, and the ranking concentrates `~63x` more lensed Ia into the top `100/yr` than random selection would. `all_lensed` is far weaker at the sharp end (`1.6-9.8x` vs `38-83x`), because aggregating the four CC subtypes dilutes the top of the list with the ones the classifier separates worst -- for a small follow-up budget, targeting `lensed_Ia` specifically is the better configuration. Second, **of the 120 cumulative operating points (6 targets x 5 epochs x 4 budgets), the 38 that are statistically clean are *all* at the `10%` or `1%` budget; not one clean operating point exists at `0.1%` or `0.01%`, for any target at any epoch.** The script now reports this honestly in two distinct forms rather than hiding it -- `NOT RESOLVABLE` where the `calib` background ESS (`~1,856`, against a `0.54%` true FPR floor) cannot place the threshold at all, and `THIN SAMPLE` where it can but the yield past it rests on too few effective events (flagged if **any** of `n_tp`, `n_fp`, `tp_ess`, `fp_ess` falls below `MIN_SAMPLE_FOR_STATS = 10`). An earlier version snapped to the nearest achievable ROC point via `np.argmin(|fpr - target|)` and reported it as though the budget had been met; that was a reporting bug, fixed. The root cause is **importance-sampling proposal mismatch, not a classifier limit** -- every population is drawn uniformly in `(z, mu)` against a `mu^-3` target, giving `0.6-2.9%` ESS/raw on signal pools with the top `1%` of events carrying `55-62%` of all weight ([issue #37](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/37)). This is **variance, not bias**: every number in Findings 2, 5 and 6 is unbiased, just noisier than its raw event count suggests. Two throwaway spikes measured the fix: a proposal matched to the **rate density** -- the intuitive answer -- *loses* for 8 of 10 classes including the background pool that gates the FPR budgets, because it concentrates draws where events are too faint to detect; the variance-optimal `p ∝ rate * sqrt(eps)` (Cauchy-Schwarz, `eps` = detection efficiency) wins for all 10 by `3.2-60.4x`. The spikes killed an already-written design for the losing proposal before any production code was touched. **Nothing in `cmsne/` has been changed and no number in this document depends on that work landing** -- see Findings 6 and 6a.
 
-9. **Established That the Strict FPR Budgets Are a Sample-Size Problem With a Known Price, Killed a Second Proposal Design With a Spike, and Generated the Data at 15x:** Point 8 attributed the missing `0.1%`/`0.01%` operating points to importance-sampling proposal mismatch. That was right about the cause and wrong about the cure. The measurable-FPR floor is simply `MIN_SAMPLE_FOR_STATS / ESS_background` -- `10/1,856 = 0.54%`, exactly where Finding 6's clean points stop -- and since ESS is linear in `N` at fixed proposal, the required generation multiple is arithmetic: `5.4x` for `0.1%` at ten effective events, `13.5x` at twenty-five, `54x` at a hundred. The `p ∝ rate*sqrt(eps)` design point 8 recommended was then **measured and rejected**: it optimises a class's *total* detection rate, but a strict FPR threshold is set by the extreme *tail* of the background score distribution, and the two are anti-correlated. `scripts/spike_tail_transfer.py` (83 seconds, job `62298093`) measured its tail gain at **`0.75x` -- worse than uniform -- at the `0.1%` tail**, against `1.65x` globally; and the `3.4x` background gain point 8 quoted was itself boost-contaminated, the clean value being `1.42x`. The tail-aware alternative `p ∝ rate*sqrt(eps*f)` offers a `21.63x` ceiling but was not pursued: `f` depends on a fitted classifier, closing a circularity categorically harder than `eps`'s, and the ceiling rests on 45 raw events. **Brute force was chosen instead**, targeting `25` effective events at a `0.1%` cut (`20%` Poisson error) -- which *clears* the field precedent rather than matching it, since the Strong Lens Finding Challenge's headline `TPR_10` metric and HOLISMOKES XXI Part II both operate at `~10` events and quote no uncertainty at all. BlueBEAR job `62368493` generated `1.5M` attempts/class across all 10 classes (`7h45m`, `~55` CPU-hours, `9.5 GB`), **completed and intact**. The downstream analysis has **not** run: the BlueBEAR `/rds` filesystem is returning `ENOSPC` on all writes -- including to a home directory at `4.8%` of quota, and including `rm` -- which killed two analysis jobs before they started. Reads are unaffected. No number in this document depends on that analysis landing; see Finding 7.
+9. **The Strict `0.1%` Budget Is Now Measured, Signal ESS Is the Binding Side, and Rates Are Derived From the Simulation (Finding 7):** Point 8 attributed the missing `0.1%`/`0.01%` operating points to importance-sampling proposal mismatch. That was right about the cause and wrong about the cure. The measurable-FPR floor is simply `MIN_SAMPLE_FOR_STATS / ESS_background` (`10/1,856 = 0.54%` on the baseline), and ESS is linear in `N` at fixed proposal. The `p ∝ rate*sqrt(eps)` design that point 8 recommended was **measured and rejected**: its gain at the `0.1%` background tail is `0.75x`, worse than uniform (`scripts/spike_tail_transfer.py`, job `62298093`). Brute force at `15x` (job `62368493`, `1.5M` attempts/class) was analysed once a transient `/rds` `ENOSPC` fault cleared. **`0.1%` is now resolvable for every target at every epoch, and 18 of 25 operating points there are clean, against 0 of 30 in Finding 6.** Background ESS clears the bar everywhere (`>= 10.6`). The 7 thin points are all thin on the *signal* side, in `lensed_sn2n`, `lensed_sn2p` and `lensed_sn2l`. Annual rates are now **derived from the simulation's own LTT weights rather than hardcoded** (`a11d2e6`, [issue #63](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/63)): `lensed_Ia` `148.8/yr`, `all_lensed` `449.3/yr`, background `804,889/yr`. These replace the `10/yr`/`45/yr`/`100,000/yr` placeholders of points 2 and 8 for all 15x numbers. The old table took volumetric unlensed subtype fractions as the observed lensed composition, which got the subtype *ordering* wrong. Corrected `lensed_Ia` purity at `0.1%` FPR is `0.49 / 0.65 / 1.98 / 0.76 / 0.36%` across `+0/+3/+14/+30/+60d`, peaking at `8.3` true vs `413` false candidates/yr at `+14d`. `lensed_sn2l` (`0.40/yr`) is a null result at every budget and is reported as such. An ESS-targeted follow-up run with per-class budgets (`max(1, 13/worst_ESS)`) is in progress. Its first submission mis-mapped eight of ten budgets onto the wrong class (fixed in `5d3f600`, corrective jobs running), and **no number here depends on it yet**. `0.01%` is out of scope: it would need a `~55M`-attempt run. The earlier `54x` plan is superseded.
+
+10. **The Most Common Lensed Supernova Is the One the Method Cannot Find (Finding 8):** With derived rates, `lensed_sn2n` is the **dominant lensed class**: `272.2/yr`, `1.83x` `lensed_Ia` and `61%` of all lensed SNe. It is also the class the colour method separates worst. TPR at `10%` FPR is `12-23%` (`21%` at `+30d`, against `lensed_Ia`'s `56%`). Its enrichment over random selection **never exceeds `2.3x` at any budget or epoch**, and is consistent with chance at strict budgets up to `+14d`. `lensed_Ia` reaches `19-107x` at `0.1%`. `0.1%` purity is `4.7-48x` lower than `lensed_Ia`'s depending on epoch (`0.020-0.076%` vs `0.36-1.98%`). This changes the paper's claim from "lensed SNe" to **lensed SNe Ia**, and means `all_lensed` (pending) is dominated by its weakest member. The `272.2/yr` rate itself is model-dependent (IIn luminosity function and template) and should be checked before it is quoted as an LSST prediction. The separation result is not rate-dependent.
 
 ---
 
@@ -291,6 +293,11 @@ multiple follows directly:
 | `25` | `20%` | `25,000` | `13.5x` |
 | `100` | `10%` | `100,000` | `54x` |
 
+This table prices the **background** side only, which was the binding side on
+the baseline. At 15x the binding side turned out to be **signal** for three CC
+subtypes (see "What 15x delivered" below). The `54x` row is arithmetic, not a
+plan.
+
 **Why the detection-aware proposal was abandoned.** The variance-optimal
 proposal under noisy importance sampling is `p ∝ rate * sqrt(eps)` (see
 `docs/superpowers/specs/2026-11-20-detection-aware-importance-proposal-design.md`
@@ -365,27 +372,234 @@ classes as a 10-way array: **completed**, `7h45m` wall clock, `~55` CPU-hours,
 closely (`lensed_Ia` `32.5%` vs `34.2%`), confirming nothing pathological at the
 larger `N`. Boosting was deliberately left at the baseline `pilot_frac=0.85`:
 holding the proposal fixed is what makes the ESS-linear-in-`N` scaling valid.
-Peak RSS was `6-22 GB` against a `120 GB` request -- the fixed OpSim overhead
-dominates, so a future `54x` run needs far less memory than naively projected.
+Generation peak RSS was `6-22 GB` against a `120 GB` request; the fixed OpSim
+overhead dominates.
 
-**Status: the analysis on this data has not run.** Two attempts (jobs `62461638`,
-`62633153`) were killed by the scheduler at the five-minute mark because SLURM
-could not create their output files: the BlueBEAR `/rds` GPFS filesystem is
-returning `ENOSPC` on **all** writes, including to a home directory at `4.8%` of
-its `20 GB` quota (`bbquota`), and including `rm` itself. Reads are unaffected,
-so the `9.5 GB` of generated data is intact. This is a filesystem fault reported
-to BEAR support, not a quota or resource problem, and **no number in this
-document depends on the 15x analysis**; Finding 6's tables stand as measured on
-`results/dual_59297152`.
+**The analysis ran once the filesystem recovered.** Two first attempts (jobs
+`62461638`, `62633153`) were killed at the five-minute mark because the BlueBEAR
+`/rds` GPFS filesystem was returning `ENOSPC` on all writes, including to a home
+directory at `4.8%` of quota and including `rm`. Reads were unaffected and the
+generated data was intact. The fault cleared on its own; no support ticket was
+needed. `rank_candidates.py` then ran per target as jobs `62886634`-`62886638`
+(`scripts/run_rank_one_bluebear.sh`). Memory is dominated by the shared
+`~299k`-event background pool, not the signal class: every single-class job
+peaked at `61.2 GB`, so the script needs `96 GB` per target and `240 GB` for
+`all_lensed`. A `64 GB` allocation OOM-kills every target. Outputs are in
+`docs/figures/purity_investigation/brute15/`.
 
-**One caveat carried forward.** `results/dual_59297152` was generated with
-`baseline_v5.3.2_10yrs.db`, which no longer exists on BlueBEAR -- only `v5.3.5`
-is present. The 15x run therefore uses a different survey cadence and its
-**absolute** rates are not directly comparable to the baseline. Every class was
-regenerated, so the run is internally consistent, but the affected tables must be
-recomputed rather than compared. Finding 5's false-positive composition
-(`unlensed_Ia` at `66.6%`) additionally shifts under the `0489253` weight fix,
-which affected the eight classes that took the early-return path asymmetrically.
+**Annual rates are now derived from the simulation, not hardcoded** (`a11d2e6`,
+[issue #63](https://github.com/anachoponte/Colour-Magnitude-SNe/issues/63)).
+The earlier `ANNUAL_RATES` table was built from `CC_FRACTIONS` (Li et al. 2011;
+Shivvers et al. 2017). Those are volumetric, *unlensed* subtype demographics:
+correct as an input to the LTT event weight, wrong as the *observed lensed*
+composition. The simulation turns one into the other through detectability and
+lensing optical depth. The table skipped that step and got the subtype
+**ordering** wrong, not just the scale. `annual_rates_from_data()` now sums
+`annual_detection_rate` from each class's `summary.json`. On
+`results/brute15_62368493`, per year:
+
+| Target | Derived rate | Base purity (rate / (rate + background)) |
+| :--- | ---: | ---: |
+| `all_lensed` | `449.3` | `0.0558%` |
+| `lensed_sn2n` | `272.2` | `0.0338%` |
+| `lensed_Ia` | `148.8` | `0.0185%` |
+| `lensed_sn2p` | `17.8` | `0.0022%` |
+| `lensed_sn1bc` | `10.1` | `0.0013%` |
+| `lensed_sn2l` | `0.40` | `0.00005%` |
+| background (all `unlensed_*`) | `804,889` | -- |
+
+These replace the `10/yr` vs `100,000/yr` and `45/yr` placeholders used in
+Findings 2-6 (which remain as measured on `results/dual_59297152`). The
+independent ESS-targeted run below reproduces them to `0.3-3%` (`lensed_sn2n`
+`272.9`, `lensed_sn2p` `18.2`, `lensed_sn1bc` `10.4`). That is a useful
+consistency check across two generations on the same cadence.
+
+The rate correction is **exactly analytic** for purity. `annual_shares` is linear,
+and thresholds, ESS, TPR and FPR are all calibrated on weights that never see
+the rates, so `purity *= (N_sig_new/N_sig_old) / (N_bg_new/N_bg_old)`. The
+re-run matched the predicted `lensed_Ia` purities to three figures. It was a
+check, not a rescue.
+
+**What 15x delivered: background now clears `0.1%` everywhere, and signal
+became the binding side.** The ESS table above counts background only, because
+Finding 6's floor was set by background. Measured on the `val` split
+(cumulative operating points, rate-weighted), the `0.1%` budget is now
+resolvable for every target at every epoch. Effective events at the threshold,
+signal / background:
+
+| Target | `+0d` | `+3d` | `+14d` | `+30d` | `+60d` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `lensed_Ia` | `73.0` / `17.9` | `76.6` / `33.6` | `130.6` / `31.0` | `124.1` / `33.3` | `80.2` / `32.0` |
+| `lensed_sn2n` | **`3.6`** / `57.7` | `15.0` / `89.0` | `13.5` / `67.5` | **`7.0`** / `29.5` | `13.7` / `52.9` |
+| `lensed_sn2p` | `13.0` / `18.1` | `27.5` / `30.7` | **`2.6`** / `50.7` | **`2.5`** / `37.1` | `26.4` / `30.5` |
+| `lensed_sn1bc` | `20.5` / `29.1` | `10.4` / `12.9` | `14.3` / `12.9` | `20.5` / `12.7` | `21.1` / `10.6` |
+| `lensed_sn2l` | **`4.8`** / `20.3` | `20.5` / `27.3` | `12.7` / `23.3` | **`3.4`** / `17.0` | **`6.0`** / `18.1` |
+| `all_lensed` | *pending (job `62886633`)* | | | | |
+
+Bold marks `THIN SAMPLE` (any ESS or raw count `< MIN_SAMPLE_FOR_STATS = 10`).
+**18 of 25 operating points at `0.1%` are now clean, against 0 of 30 in Finding
+6.** Every background ESS is `>= 10.6`. All seven thin points are thin on the
+**signal** side, in three CC subtypes. All 50 operating points at the `10%` and
+`1%` budgets are clean. `0.01%` remains thin for most targets and epochs and
+stays out of scope (see below).
+
+Two things this table says about the method, not just the sampling:
+
+- **ESS at a tail cut is lumpy, not smooth in epoch.** `lensed_sn2p` goes
+  `13.0 -> 27.5 -> 2.6` across consecutive epochs. A tail threshold's ESS is set
+  by whether a few heavy-weight events fall just above or just below the cut, so
+  "ESS is linear in `N`" holds in expectation, with large epoch-to-epoch scatter
+  around it. Budgets sized from the *worst* epoch are a target, not a guarantee.
+- **The purities these ESS support** (`0.1%` budget, cumulative; `*` = thin):
+
+| Target | `+0d` | `+3d` | `+14d` | `+30d` | `+60d` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `lensed_Ia` | `0.49%` | `0.65%` | `1.98%` | `0.76%` | `0.36%` |
+| `lensed_sn2n` | `0.021%`* | `0.020%` | `0.041%` | `0.066%`* | `0.076%` |
+| `lensed_sn2p` | `0.004%` | `0.006%` | `0.094%`* | `0.058%`* | `0.024%` |
+| `lensed_sn1bc` | `0.006%` | `0.021%` | `0.040%` | `0.033%` | `0.044%` |
+| `lensed_sn2l` | `0.000%`* | `0.000%` | `0.000%` | `0.000%`* | `0.000%`* |
+
+  `lensed_Ia` is the only target with purity above `0.1%` at this budget. It
+  peaks at `+14d`, with `8.3` true candidates/yr among `413` false. The `+14d`
+  peak is a feature of the decision epoch: purity *falls* again by `+60d`.
+  `lensed_sn2l` is a null result, not an omission: at `0.40/yr` against
+  `805k/yr` of background it cannot produce a candidate list at any budget, and
+  it is reported for completeness. `lensed_sn2n` is the substantive surprise and
+  gets its own Finding (8).
+
+**The ESS-targeted run** (`scripts/run_ess_targeted_bluebear.sh`, in progress).
+A flat multiple buys `lensed_Ia` signal it already has (worst ESS `73`) while
+leaving three CC subtypes short. The follow-up therefore scales each class by
+`max(1, 13/worst_ESS)`. It targets `13` rather than `10` so the worst epoch
+clears the bar instead of landing on it.
+
+| Class | 15x attempts | Worst `0.1%` ESS (15x) | Budget |
+| :--- | ---: | :---: | ---: |
+| `lensed_Ia` | `1.5M` | `73.0` | `1.5M` (`1x`) |
+| `lensed_sn1bc` | `1.5M` | `10.4` | `1.88M` |
+| `lensed_sn2n` | `1.5M` | `3.6` | `5.42M` |
+| `lensed_sn2p` | `1.5M` | `2.5` | `7.8M` |
+| `lensed_sn2l` | `1.5M` | `3.4` | `5.74M` |
+| each `unlensed_*` | `1.5M` | `10.6` (background, `sn1bc` target) | `1.84M` |
+
+Boosting stays at `pilot_frac=0.85`, because the linear-in-`N` scaling holds only
+at fixed proposal. **The first submission (array `62886623`) mis-mapped the
+budgets.** `run_dual_schema.py`'s `CLASSES` order interleaves unlensed/lensed
+per subtype after the first two entries, and the budget table assumed
+all-lensed-then-all-unlensed. Eight of ten budgets landed on the wrong class:
+`lensed_sn2n` and `lensed_sn2p`, the two binding classes, got `1.84M` each, while
+`lensed_sn1bc`, `lensed_sn2l` and `unlensed_sn2l` were over-provisioned. Fixed
+in `5d3f600`. Corrective job `63065791` regenerates `lensed_sn2n` (`5.42M`) and
+`lensed_sn2p` (`7.8M`). Job `63073971` regenerates `lensed_sn2l` at its
+designed `5.74M` with a 72h limit, as insurance for the mis-mapped `7.8M` task
+(`62886623_5`), which risks overrunning its 48h limit. **No number in this
+document yet depends on the ESS-targeted run.** Whether it gets every target
+above `13` at `0.1%` will be reported per target once it lands.
+
+**Out of scope: `0.01%`.** Reaching it would need background `x4.3` and
+`lensed_sn2l` `x6.7` (`10M` attempts alone, for a class with `~4` events per
+decade), taking the run to `~55M` attempts. Reporting `0.1%` with honest ESS
+and marking `0.01%` unresolved already exceeds the precedent above. This
+supersedes the `54x` row of the first table as a plan: that row remains correct
+arithmetic but is not being pursued.
+
+**Caveats carried forward.** `results/dual_59297152` was generated with
+`baseline_v5.3.2_10yrs.db`, which no longer exists on BlueBEAR; only `v5.3.5` is
+present. The 15x and ESS-targeted runs therefore use a different survey cadence,
+and their **absolute** rates are not comparable to Findings 2-6. Each run is
+internally consistent. Finding 5's false-positive composition (`unlensed_Ia` at
+`66.6%`) also shifts under the `0489253` weight fix and has not yet been
+recomputed.
+
+---
+
+### Finding 8: The Most Common Lensed Supernova Is the One the Colour Method Cannot Find -- Lensed SNe IIn (`rank_candidates.py`, 15x run)
+
+With rates derived from the simulation (Finding 7), `lensed_sn2n` is the
+**dominant lensed class by number**: `272.2/yr`, `1.83x` `lensed_Ia`'s `148.8/yr`
+and `61%` of all lensed SNe (`449.3/yr`). The hardcoded table had it as a minor
+subtype. It is also the class the colour method separates **worst**. This
+changes what the method can claim, not just its numbers.
+
+**TPR at the `10%` FPR budget** (cumulative, `val` split, rate-weighted; all
+points clean):
+
+| Target | `+0d` | `+3d` | `+14d` | `+30d` | `+60d` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `lensed_Ia` | `36.0%` | `42.2%` | `48.9%` | `55.7%` | `50.7%` |
+| `lensed_sn2p` | `26.0%` | `39.5%` | `49.7%` | `44.9%` | `37.9%` |
+| `lensed_sn1bc` | `36.9%` | `41.3%` | `47.4%` | `45.1%` | `41.2%` |
+| `lensed_sn2l` | `28.2%` | `40.5%` | `34.0%` | `22.5%` | `21.2%` |
+| **`lensed_sn2n`** | **`11.6%`** | **`12.9%`** | **`19.0%`** | **`21.1%`** | **`22.6%`** |
+
+`lensed_sn2n` has the lowest TPR at four of five epochs. At `+60d`,
+`lensed_sn2l` is marginally lower. At `+30d` it is `21%` against `lensed_Ia`'s
+`56%`.
+
+**The sharper statement is in enrichment** (purity divided by the base purity
+the target would have under random selection). For `lensed_Ia` and
+`lensed_sn1bc`, tightening the budget concentrates signal: enrichment rises from
+`~4-5x` at `10%` to `~5-107x` at `0.1%`, mostly `>20x`. `lensed_sn2p` does the
+same from `+14d` (`11-42x`), but not at `+0d`/`+3d` (`1.8-2.5x`). The other type
+II with a strict-budget problem, `lensed_sn2l`, peaks at `9.5x` (`1%`, `+3d`)
+and stays `<= 3.2x` at `0.1%`. `lensed_sn2n` is the extreme case. Its
+enrichment barely rises at all and never exceeds `2.3x` anywhere:
+
+| `lensed_sn2n` enrichment | `+0d` | `+3d` | `+14d` | `+30d` | `+60d` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `10%` FPR | `1.14x` | `1.30x` | `1.91x` | `2.12x` | `2.29x` |
+| `1%` FPR | `0.93x` | `0.90x` | `0.94x` | `1.76x` | `2.13x` |
+| `0.1%` FPR | `0.63x`* | `0.58x` | `1.22x` | `1.96x`* | `2.24x` |
+| *`lensed_Ia` at `0.1%`, for comparison* | *`26.6x`* | *`35.1x`* | *`106.9x`* | *`41.0x`* | *`19.4x`* |
+
+(`*` = thin sample.) At every budget and epoch, the ranking puts `lensed_sn2n`
+at the top of the list **no more than `~2.3x` more often than chance**. At
+`+0d`-`+14d` and strict budgets it is consistent with chance. The `+3d`/`0.1%`
+value (`0.58x`, signal ESS `15.0`, i.e. `~+/-26%` relative) sits nominally
+`~2.8 sigma` below unity. Kish ESS understates the error for weights this
+skewed (Finding 6), and this is one of 15 values in the table, so it is
+**flagged, not claimed**, as anti-selection. What is established is the absence
+of selection.
+At `0.1%`, `lensed_sn2n` purity is `4.7x`-`48x` lower than `lensed_Ia`'s,
+depending on epoch (`0.020-0.076%` vs `0.36-1.98%`). Because `lensed_sn2n` is the
+more common class, the gap in *base* purity runs the other way (`0.034%` vs
+`0.019%`), so the whole difference comes from separation.
+
+**Absolute yield tells the same story with a twist.** At the loose `10%` budget,
+volume partly compensates: `lensed_sn2n` contributes `32-61` true candidates/yr,
+comparable to `lensed_Ia`'s `54-83`. At `0.1%` it contributes `0.15-0.73/yr`
+against `lensed_Ia`'s `3.0-8.3/yr`. The colour method recovers lensed IIn only in
+a broad, highly contaminated alert stream, and loses them in a spectroscopic
+follow-up list.
+
+**What this means for the paper's claims.**
+- The method's headline is **lensed SNe Ia**, not "lensed SNe". Of the classes
+  with a non-negligible rate, `lensed_Ia` is the only one with `0.1%` purity
+  above `0.1%`. `lensed_sn1bc` (from `+3d`) and `lensed_sn2p` (from `+14d`)
+  separate well in *enrichment* (`~11-42x` at `0.1%`) but are too rare
+  (`10.1/yr`, `17.8/yr`) to matter in yield.
+- **`all_lensed` will be dominated by its weakest member.** `61%` of its rate is
+  `lensed_sn2n`, which quantitatively explains Finding 6's observation that
+  `all_lensed` is far weaker at the sharp end than `lensed_Ia` alone. The
+  `all_lensed` 15x result (job `62886633`, pending) should be read against this.
+- A colour-only trigger aimed at "lensed supernovae" in general would miss most
+  of them by number. That is a scope statement the paper should make
+  explicitly, not leave for a referee.
+
+**Why, and what is not yet established.** Two hypotheses are plausible and
+**untested** here. (1) SNe IIn have a broad intrinsic luminosity function, so
+the `0.75-4.2 mag` brightening from `mu in [2, 50]` is partly degenerate with
+intrinsic scatter, removing the "too bright for its colour" signature the method
+relies on for Ia. (2) IIn colours are blue and slowly evolving, and so less
+distinctive than the Ia colour trajectory. Separately, the `272.2/yr` rate is
+**model-dependent**. It inherits the simulation's IIn template, luminosity
+function and `CC_FRACTIONS` input, and IIn are luminous enough to be detected to
+high `z`, where lensing optical depth is largest. The ordering
+`lensed_sn2n > lensed_Ia` should be checked against the IIn luminosity-function
+assumption before it is stated as a prediction for LSST. Both the TPR and the
+enrichment results above are robust to the rate: they are calibrated on weights
+that never see it (Finding 7).
 
 ---
 
@@ -399,6 +613,7 @@ which affected the eight classes that took the early-return path asymmetrically.
   - **Finding 5** (`investigate_contaminant_properties.py`, all 6 targets -- suffixes `{,_alllensed,_snibc,_sn2l,_sn2n,_sn2p}`): ranked-follow-up yield/purity vs. FPR budget (`ranked_followup_summary*.png`), false-positive subtype composition by budget (`fp_subtype_composition*.png`), redshift distribution of true vs. false positives at the 10%-FPR budget with the secondary `z`-window cut marked (`contaminant_redshift_10pct*.png`), the same at the 10%-FPR budget for survey epoch of first detection (`contaminant_trigday_10pct*.png`, diagnostic only) and final photometric uncertainty (`contaminant_snr_10pct*.png`, diagnostic only), and the full per-epoch/per-budget tables (`contaminant_properties*.json`).
   - **Finding 5, out-of-sample validation** (`validate_zcut_outofsample.py`, all 6 targets, same suffixes): clean-`z` vs. photo-z-noise-stressed `z`-cut gain and before/after purity, both out-of-sample, by decision epoch (`zcut_outofsample_validation*.png`), and the full per-epoch/per-budget tables including both the clean and noisy results (`zcut_outofsample_validation*.json`).
   - **Finding 6** (`rank_candidates.py`, all 6 targets -- suffixes `{,_alllensed,_snibc,_sn2l,_sn2n,_sn2p}`): the review-budget lift curve, cumulative annual candidates reviewed vs. cumulative annual true positives recovered, log-log (`rank_lift*.png`); the rate-weighted score distribution of true vs. false positives with each budget's threshold marked (`rank_distribution*.png`); and the full per-epoch tables -- thresholds, exclusive tier stats, cumulative operating points, per-budget `resolvable` flags, `calib_n_bg`, `finest_resolvable_fpr`, and a 202-point sampled lift curve (`rank_candidates*.json`).
+    - **`brute15/`** (Findings 7-8): the same `rank_candidates.py` outputs (`rank_lift*.png`, `rank_distribution*.png`, `rank_candidates*.json`) on `results/brute15_62368493` with derived annual rates, jobs `62886634`-`62886638`. Five targets so far (unsuffixed = `lensed_ia`); `all_lensed` (`_alllensed`) is pending job `62886633`. Its per-event CSVs (`~117 MB`) stay on BlueBEAR.
     - The per-event ranked lists themselves (`ranked_candidates*.csv`, 6 files, 9.4 MB) are **deliberately not committed**, matching this directory's existing convention of tracking figures and JSON tables only. They regenerate from `scripts/run_rank_candidates_bluebear.sh` in ~37 minutes. Each carries both raw simulated counts and annual-rate columns, with the cumulative annual columns explicitly suffixed `_display_only`.
 
 - **`docs/figures/weight_encodings/`:**
