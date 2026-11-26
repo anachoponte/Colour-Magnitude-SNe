@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=cmsne-esst
 #SBATCH --output=slurm_logs/esst-%A_%a.out
-#SBATCH --time=48:00:00
+#SBATCH --time=60:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=96G
@@ -61,15 +61,26 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 # different cadence, so absolute rates here are NOT comparable to that baseline.
 export CMSNE_OPSIM_DB="${CMSNE_OPSIM_DB:-/rds/projects/s/smithgp-lensed-transients/andres/opsim_data/baseline_v5.3.5_10yrs.db}"
 
-# Indexed by --class-index, i.e. run_dual_schema.py's CLASSES order:
-#   0 lensed_Ia      1 unlensed_Ia    2 lensed_sn1bc   3 lensed_sn2l
-#   4 lensed_sn2n    5 lensed_sn2p    6 unlensed_sn1bc 7 unlensed_sn2l
-#   8 unlensed_sn2n  9 unlensed_sn2p
-N_MAP=(1500000 1840000 1880000 5740000 5420000 7800000 1840000 1840000 1840000 1840000)
+# Indexed by --class-index, i.e. run_dual_schema.py's CLASSES order. That order
+# INTERLEAVES unlensed/lensed per subtype after the first two entries, because
+# CLASSES is built by a loop that appends unlensed_<x> then lensed_<x>:
+#   0 lensed_Ia      1 unlensed_Ia    2 unlensed_sn1bc  3 lensed_sn1bc
+#   4 unlensed_sn2l  5 lensed_sn2l    6 unlensed_sn2n   7 lensed_sn2n
+#   8 unlensed_sn2p  9 lensed_sn2p
+#
+# The first submission of this script (array 62886623) used a WRONG comment that
+# assumed all-lensed-then-all-unlensed, so eight of the ten budgets landed on the
+# wrong class. Net effect: lensed_sn1bc, lensed_sn2l and unlensed_sn2l were
+# over-provisioned, and the two classes the ESS table says are binding --
+# lensed_sn2n (got 1.84M, needs 5.42M) and lensed_sn2p (got 1.84M, needs 7.8M) --
+# were left short. Budgets below are keyed to the real order.
+N_MAP=(1500000 1840000 1840000 1880000 1840000 5740000 1840000 5420000 1840000 7800000)
 
 IDX="${SLURM_ARRAY_TASK_ID:-0}"
 N="${N_MAP[$IDX]}"
-OUT="results/esstarget_${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}"
+# CMSNE_ESST_OUT lets a corrective re-run write beside an existing production
+# set instead of overwriting pickles that are short but still valid.
+OUT="${CMSNE_ESST_OUT:-results/esstarget_${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}}"
 mkdir -p "$OUT"
 
 echo "host=$(hostname)  commit=$(git rev-parse --short HEAD 2>/dev/null || echo ?)"
