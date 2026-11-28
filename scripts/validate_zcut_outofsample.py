@@ -44,8 +44,9 @@ sys.path.insert(0, _ROOT)
 from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
 from cmsne.importance_sampling import weighted_quantile, effective_sample_size
 from investigate_contaminant_properties import (
-    TARGET_SIGNAL_CLASSES, TARGET_LABELS, ANNUAL_RATES, TABLE_POINTS,
+    TARGET_SIGNAL_CLASSES, TARGET_LABELS, TABLE_POINTS,
     MIN_SAMPLE_FOR_STATS, Z_WINDOW_PERCENTILES, load_data_tagged,
+    annual_rates_from_data,
 )
 
 PHOTOZ_SIGMA_FRAC = 0.03  # sigma_z = PHOTOZ_SIGMA_FRAC * (1 + z); mid-range for broad-band photo-z
@@ -177,8 +178,10 @@ def main():
 
     signal_classes = TARGET_SIGNAL_CLASSES[args.target]
     signal_label, file_suffix = TARGET_LABELS[args.target]
-    rates = ANNUAL_RATES[args.target]
+    rates = annual_rates_from_data(args.data_dir, args.target)
     N_sig_ann, N_bg_ann = rates['N_sig'], rates['N_bg']
+    print(f'Annual rates for {args.target}: N_sig={N_sig_ann:.4g}/yr, '
+          f'N_bg={N_bg_ann:.4g}/yr (derived from {args.data_dir})')
 
     print(f'Loading data from {args.data_dir} for {signal_label}...')
     signal, background, bg_subtype = load_data_tagged(args.data_dir, signal_classes)

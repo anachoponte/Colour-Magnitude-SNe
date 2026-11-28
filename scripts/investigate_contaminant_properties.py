@@ -76,22 +76,31 @@ _CC_SOURCE_FOR_CLASS = {
     'lensed_sn2n': 'nugent-sn2n', 'lensed_sn2p': 'nugent-sn2p',
 }
 
-# Same literature/placeholder rates as investigate_purity_tradeoff.py -- see
-# that script's header comment for the citations and caveats behind these.
-ANNUAL_RATES = {
+# Literature/placeholder rates -- RETAINED FOR PROVENANCE AND FALLBACK ONLY.
+# Prefer annual_rates_from_data() below, which derives the same quantities from
+# the analysed run's own LTT per-event weights (cmsne.rates.absolute_rate_weight).
+# See issue #63 for the measurement that retired these as the default, and the
+# citation/derivation notes in investigate_purity_tradeoff.py plus issue #43.
+#
+# These are WRONG IN ORDERING, not merely uncertain in scale. The per-CC-subtype
+# entries split the lensed-CC total by cmsne.lsst.CC_FRACTIONS (Li et al. 2011,
+# Shivvers et al. 2017), which are VOLUMETRIC, UNLENSED subtype demographics.
+# Applying them to a magnification- and detection-limited lensed sample discards
+# the very selection effect the simulation exists to model: SNe IIn are
+# intrinsically luminous and long-lived, so they stay above threshold out into
+# the high-z region where LensingOpticalDepth.dtau_dmu_dz is largest. Measured on
+# results/brute15_62368493, IIn are 90.6% of lensed CC by summed weight and the
+# single dominant lensed class overall (272.2/yr of 449.3/yr); CC_FRACTIONS
+# assigns them 6%, ranking them fourth of five.
+LITERATURE_ANNUAL_RATES = {
     'all_lensed': {'N_sig': 45.0, 'N_bg': 100_000.0},
     'lensed_ia':  {'N_sig': 10.0, 'N_bg': 100_000.0},
 }
-# Per-CC-subtype rates: split the already-used lensed-CC total (all_lensed -
-# lensed_ia = 35/yr) by this project's own literature-sourced relative CC
-# subtype demographics (cmsne.lsst.CC_FRACTIONS; Li et al. 2011, Shivvers et
-# al. 2017 -- the same fractions already baked into every event's `weight`).
-# This is a split of an already-flagged, not-independently-validated total
-# (see all_lensed's own caveat, issue #43), so treat these as even more
-# provisional than the all_lensed/lensed_ia figures above.
-_LENSED_CC_TOTAL_ANN = ANNUAL_RATES['all_lensed']['N_sig'] - ANNUAL_RATES['lensed_ia']['N_sig']
+_LENSED_CC_TOTAL_ANN = (LITERATURE_ANNUAL_RATES['all_lensed']['N_sig']
+                        - LITERATURE_ANNUAL_RATES['lensed_ia']['N_sig'])
 for _cls, _source in _CC_SOURCE_FOR_CLASS.items():
-    ANNUAL_RATES[_cls] = {'N_sig': _LENSED_CC_TOTAL_ANN * CC_FRACTIONS[_source], 'N_bg': 100_000.0}
+    LITERATURE_ANNUAL_RATES[_cls] = {
+        'N_sig': _LENSED_CC_TOTAL_ANN * CC_FRACTIONS[_source], 'N_bg': 100_000.0}
 
 TARGET_SIGNAL_CLASSES = {
     'all_lensed': [c for c in CLASSES if c.startswith('lensed_')],
@@ -107,6 +116,50 @@ TARGET_LABELS = {
     'lensed_sn2n': ('lensed SN IIn', '_sn2n'),
     'lensed_sn2p': ('lensed SN IIP', '_sn2p'),
 }
+
+
+def _summary_annual_rate(data_dir, cls):
+    """events/yr in the LSST WFD footprint for one simulated class.
+
+    Reads `annual_detection_rate` from that class's run summary: the weighted
+    sum over its DETECTED events, which is exactly the quantity
+    cmsne.rates.absolute_rate_weight() produces per event (the LTT
+    absolute-rate framework; issue #43's "summed event weights").
+    """
+    with open(os.path.join(data_dir, f'{cls}.summary.json')) as fh:
+        return float(json.load(fh)['annual_detection_rate'])
+
+
+def annual_rates_from_data(data_dir, target, strict=False):
+    """Annual signal/background rates for `target`, from the run's own weights.
+
+    N_sig sums the target's lensed classes; N_bg sums all five unlensed classes.
+
+    NO renormalisation to the resolvable, multiply-imaged lensed population
+    (~45/yr in the literature) is applied, BY DESIGN: this colour method exists
+    to pick out systems whose image multiplicity is NOT recognised, so the
+    magnified population the simulation integrates (mu in [2, 50],
+    min_detections=5) is the correct target population, and the LTT rates apply
+    directly. See issue #63.
+
+    Falls back to LITERATURE_ANNUAL_RATES (with a warning on stderr) for
+    datasets that predate per-class summaries. Pass strict=True to raise
+    instead -- appropriate when a result is going into a paper.
+    """
+    try:
+        n_sig = sum(_summary_annual_rate(data_dir, c)
+                    for c in TARGET_SIGNAL_CLASSES[target])
+        n_bg = sum(_summary_annual_rate(data_dir, c) for c in UNLENSED_CLASSES)
+    except (OSError, KeyError, ValueError, TypeError):
+        if strict:
+            raise
+        print(f'WARNING: could not derive annual rates from {data_dir}; falling '
+              f'back to the LITERATURE_ANNUAL_RATES placeholders for {target}. '
+              f'Those get the lensed subtype ordering wrong (see issue #63) -- '
+              f'treat any purity figure from this run as indicative only.',
+              file=sys.stderr)
+        return dict(LITERATURE_ANNUAL_RATES[target])
+    return {'N_sig': n_sig, 'N_bg': n_bg}
 
 TABLE_POINTS = [
     ('10% FPR (Standard Broker)', 0.10),
@@ -271,8 +324,10 @@ def main():
     signal_classes = TARGET_SIGNAL_CLASSES[args.target]
     signal_label, file_suffix = TARGET_LABELS[args.target]
 
-    rates = ANNUAL_RATES[args.target]
+    rates = annual_rates_from_data(args.data_dir, args.target)
     N_sig_ann, N_bg_ann = rates['N_sig'], rates['N_bg']
+    print(f'Annual rates for {args.target}: N_sig={N_sig_ann:.4g}/yr, '
+          f'N_bg={N_bg_ann:.4g}/yr (derived from {args.data_dir})')
 
     print(f'Loading data from {args.data_dir} for {signal_label}...')
     signal, background, bg_subtype = load_data_tagged(args.data_dir, signal_classes)

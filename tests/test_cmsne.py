@@ -2409,7 +2409,7 @@ check('evolving_contours with magnitude_mode="matched" returns valid probability
       np.all((_surfaces_bm[0.0][2] >= 0) & (_surfaces_bm[0.0][2] <= 1)))
 
 
-print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
+print(f'\n===== checkpoint: {len(PASS)} passed, {len(FAIL)} failed =====')
 if FAIL:
     print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
 
@@ -2460,3 +2460,193 @@ check('absolute_rate_weight MC lensed scales by delta_z * delta_mu / N',
 # Check resolution helper
 check('check_images_resolved respects seeing',
       check_images_resolved(1.2, 0.7) and not check_images_resolved(0.5, 0.7))
+
+
+print('\n=== detection-aware importance proposals (cmsne.proposals) ===')
+from cmsne.proposals import DetectionAwareProposal
+
+_trap = getattr(np, 'trapezoid', None) or np.trapz   # renamed in numpy 2.x
+_PZ, _PMU = (0.1, 1.5), (2.0, 50.0)
+_prate = lambda z, mu: (1.0 + np.asarray(z, float)) ** 2 * np.asarray(mu, float) ** -3.0
+_pflat = lambda z, mu: np.ones_like(np.asarray(z, float))
+
+
+def _integrate_proposal(p, lensed=True, n=400):
+    zs = np.linspace(*_PZ, n)
+    if not lensed:
+        return _trap(p.density(zs, np.ones_like(zs)), zs)
+    mus = np.linspace(*_PMU, n)
+    ZZ, MM = np.meshgrid(zs, mus, indexing='ij')
+    vals = p.density(ZZ.ravel(), MM.ravel()).reshape(ZZ.shape)
+    return _trap(_trap(vals, mus, axis=1), zs)
+
+
+_p_l = DetectionAwareProposal(_prate, _PZ, _PMU, lensed=True)
+check('proposal: lensed density integrates to 1',
+      bool(np.isclose(_integrate_proposal(_p_l, True), 1.0, rtol=2e-2)))
+_p_u = DetectionAwareProposal(lambda z, mu: (1.0 + np.asarray(z, float)) ** 2,
+                              _PZ, None, lensed=False)
+check('proposal: unlensed density integrates to 1',
+      bool(np.isclose(_integrate_proposal(_p_u, False), 1.0, rtol=2e-2)))
+
+_rng = np.random.default_rng(7)
+_zs, _mus = _p_l.sample(120000, rng=_rng)
+check('proposal: sample() stays inside the domain',
+      bool(_zs.min() >= _PZ[0] and _zs.max() <= _PZ[1] and
+           _mus.min() >= _PMU[0] and _mus.max() <= _PMU[1]))
+
+_ze = np.linspace(*_PZ, 7); _me = np.geomspace(*_PMU, 7)
+_emp, _, _ = np.histogram2d(_zs, _mus, bins=[_ze, _me]); _emp = _emp / _emp.sum()
+_zc = 0.5 * (_ze[1:] + _ze[:-1]); _mc = 0.5 * (_me[1:] + _me[:-1])
+_ZC, _MC = np.meshgrid(_zc, _mc, indexing='ij')
+_pred = _p_l.density(_ZC.ravel(), _MC.ravel()).reshape(_ZC.shape) * np.outer(np.diff(_ze), np.diff(_me))
+_pred = _pred / _pred.sum()
+check('proposal: sample() reproduces density()',
+      bool(np.max(np.abs(_emp - _pred)) < 0.015),
+      f'max |emp-pred| = {np.max(np.abs(_emp - _pred)):.4f}')
+
+# The defensive mixture must keep every region reachable, however bad eps_hat is.
+_p_zero = DetectionAwareProposal(_prate, _PZ, _PMU, lensed=True)
+_p_zero.set_efficiency_grid(np.zeros_like(_p_zero.eps_hat))
+_z0, _mu0 = _p_zero.sample(2000, rng=_rng)
+check('proposal: density stays positive with eps_hat identically zero',
+      bool(np.all(_p_zero.density(_z0, _mu0) > 0)))
+_p_half = DetectionAwareProposal(_prate, _PZ, _PMU, lensed=True)
+_e = np.ones_like(_p_half.eps_hat); _e[:, _e.shape[1] // 2:] = 0.0
+_p_half.set_efficiency_grid(_e)
+check('proposal: zero-efficiency region keeps positive density (defensive mixture)',
+      bool(_p_half.density(np.array([0.8]), np.array([_PMU[1] * 0.95]))[0] > 0))
+
+# Degenerate reductions: the new machinery must contain the old behaviour.
+_p_flat = DetectionAwareProposal(_pflat, _PZ, _PMU, lensed=True)
+_p_flat.set_efficiency_grid(np.full_like(_p_flat.eps_hat, 0.5))
+check('proposal: constant rate and constant eps give the uniform density',
+      bool(np.allclose(_p_flat.density(np.array([0.3, 0.8, 1.3]), np.array([5.0, 20.0, 45.0])),
+                       1.0 / ((_PZ[1] - _PZ[0]) * (_PMU[1] - _PMU[0])), rtol=1e-6)))
+
+_p_rate = DetectionAwareProposal(_prate, _PZ, _PMU, lensed=True, alpha=0.0)
+_p_rate.set_efficiency_grid(np.full_like(_p_rate.eps_hat, 0.3))
+_da = _p_rate.density(np.array([0.8]), np.array([4.0]))[0]
+_db = _p_rate.density(np.array([0.8]), np.array([32.0]))[0]
+check('proposal: constant eps reduces to the rate-matched proposal',
+      bool(np.isclose(_da / _db, _prate(0.8, 4.0) / _prate(0.8, 32.0), rtol=0.15)),
+      f'{_da / _db:.2f} vs {_prate(0.8, 4.0) / _prate(0.8, 32.0):.2f}')
+
+# Efficiency recovery from pilot outcomes.
+_p_est = DetectionAwareProposal(_prate, _PZ, _PMU, lensed=True)
+_r2 = np.random.default_rng(11)
+_npil = 120000
+_zp = _r2.uniform(*_PZ, _npil); _mup = _r2.uniform(*_PMU, _npil)
+_true_eps = lambda z, mu: 1.0 / (1.0 + np.exp(-(np.asarray(mu, float) - 20.0) / 5.0))
+_p_est.estimate_efficiency(_zp, _mup, _r2.random(_npil) < _true_eps(_zp, _mup))
+check('proposal: estimate_efficiency recovers a low-efficiency region',
+      bool(_p_est.efficiency_at(np.array([0.8]), np.array([5.0]))[0] < 0.15))
+check('proposal: estimate_efficiency recovers a high-efficiency region',
+      bool(_p_est.efficiency_at(np.array([0.8]), np.array([45.0]))[0] > 0.85))
+
+# The point of the exercise, measured end to end on the ESTIMATED efficiency.
+def _ess_per_attempt(p, rate, eps_f, n=150000, seed=3):
+    r = np.random.default_rng(seed)
+    z, mu = p.sample(n, rng=r)
+    d = p.density(z, mu)
+    det = r.random(n) < eps_f(z, mu)
+    w = np.zeros(n); w[det] = rate(z[det], mu[det]) / d[det]
+    s1, s2 = w.sum(), (w ** 2).sum()
+    return (s1 * s1 / s2) / n if s2 > 0 else 0.0
+
+_p_uni = DetectionAwareProposal(_pflat, _PZ, _PMU, lensed=True)
+_p_uni.set_efficiency_grid(np.ones_like(_p_uni.eps_hat))
+_base = _ess_per_attempt(_p_uni, _prate, _true_eps)
+_got = _ess_per_attempt(_p_est, _prate, _true_eps)
+check('proposal: detection-aware beats uniform in ESS per attempt',
+      bool(_got > _base),
+      f'uniform={_base:.5f} matched={_got:.5f} gain={_got / _base if _base > 0 else float("nan"):.1f}x')
+
+
+print('\n=== generate_with_boosting attempt accounting ===')
+
+
+class _AttemptCountGen:
+    """Counts attempts and keeps everything, with features flat enough that
+    diagnose_sparse_cells flags nothing -- the path that was undercounting."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    def generate_many(self, n, kind, z_range, abs_mag_avg, abs_mag_sig,
+                      magnification_range=(2.0, 50.0), mjd_range=None,
+                      mjd_high=None, min_detections=None, verbose=False):
+        self.attempts += int(n)
+        lensed = (kind == 'lensed')
+        return [{'z': float(np.random.uniform(*z_range)),
+                 'magnification': float(np.random.uniform(*magnification_range)) if lensed else 1.0,
+                 'colours': {'gr': 0.0}, 'magnitudes': {'lsstr': 22.0},
+                 'peakmags': {'lsstr': 22.0}} for _ in range(int(n))]
+
+
+_N, _ZR = 2000, (0.1, 1.0)
+for _pf, _label in ((0.85, 'pilot_frac=0.85'), (1.0, 'pilot_frac=1.0')):
+    _g = _AttemptCountGen(); np.random.seed(0)
+    _ev, _info = isamp.generate_with_boosting(
+        _g, _N, 'unlensed', _ZR, -19.3, 0.1,
+        rate_weight_fn=lambda z, mu: 1.0 * (_ZR[1] - _ZR[0]) / _N, pilot_frac=_pf)
+    check(f'generate_with_boosting attempts exactly n ({_label})',
+          _g.attempts == _N and _info.get('total_attempted') == _N,
+          f'attempted {_g.attempts}, total_attempted={_info.get("total_attempted")}')
+    _tw = sum(e['weight'] for e in _ev)
+    check(f'generate_with_boosting weights recover the known integral ({_label})',
+          bool(np.isclose(_tw, _ZR[1] - _ZR[0], rtol=0.02)),
+          f'{_tw:.5f} vs {_ZR[1] - _ZR[0]:.5f} (ratio {_tw / (_ZR[1] - _ZR[0]):.4f})')
+
+
+print('\n=== rank_candidates: pattern-grouped scoring is exact ===')
+# scripts/rank_candidates.py scores events grouped by missing-data pattern so
+# the KDE pattern cache (LRU, kde_pattern_cache_size) is not thrashed: with
+# more distinct patterns than cache slots and events in mixed order, every
+# event otherwise rebuilds its pattern's subset by scanning the whole training
+# set, making scoring ~O(N_eval * N_train). Grouping must be a pure speed-up:
+# identical scores, in the caller's original order.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
+from rank_candidates import score_grouped_by_pattern
+from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID
+
+_rngp = np.random.default_rng(11)
+def _mk_patchy(n, mu):
+    """Trajectory events with random NaN dropout -> many distinct patterns."""
+    out = []
+    for _ in range(n):
+        e = {}
+        for day in TRAJECTORY_GRID:
+            suffix = f'_d{int(day)}'
+            for colour in ('ug', 'gr', 'ri', 'iz', 'zy'):
+                e[f'{colour}{suffix}'] = (float('nan') if _rngp.random() < 0.3
+                                          else float(_rngp.normal(mu, 0.4)))
+            e[f'peakmag{suffix}'] = float(_rngp.normal(22, 1))
+        out.append(e)
+    return out
+
+_sig_p, _bg_p = _mk_patchy(300, 1.0), _mk_patchy(300, 0.0)
+_clf_p = TrajectoryClassifier(target_fpr=0.10, kde_pattern_cache_size=4).fit(_sig_p, _bg_p)
+_query_p = _mk_patchy(120, 0.5)
+from cmsne.classifier import colour_feature_matrix, _finite_pattern
+_Xq, _ = colour_feature_matrix(_query_p, _clf_p.keys, _clf_p.extra)
+_n_pat = len({_finite_pattern(x) for x in _Xq})
+check('pattern-grouping test exercises cache eviction (patterns > cache slots)',
+      _n_pat > 4, f'{_n_pat} distinct patterns')
+_plain = _clf_p.score(_query_p)
+_grouped = score_grouped_by_pattern(_clf_p, _query_p)
+check('score_grouped_by_pattern returns scores identical to clf.score, same order',
+      _grouped.shape == _plain.shape and bool(np.array_equal(_grouped, _plain)),
+      f'max |diff| = {np.max(np.abs(_grouped - _plain)) if _grouped.shape == _plain.shape else "shape mismatch"}')
+check('score_grouped_by_pattern handles an empty event list',
+      score_grouped_by_pattern(_clf_p, []).shape == (0,))
+
+
+# NOTE: the checkpoint summary above runs mid-file and exits early on failure.
+# Everything after it needs its own summary, or a failure there is printed but
+# never fails the suite -- which silently covered the absolute_rate_weight
+# tests, exactly the ones most likely to break when the Monte Carlo weight
+# normalisation changes.
+print(f'\n===== {len(PASS)} passed, {len(FAIL)} failed =====')
+if FAIL:
+    print('FAILED: ' + ', '.join(FAIL)); sys.exit(1)
