@@ -2599,6 +2599,49 @@ for _pf, _label in ((0.85, 'pilot_frac=0.85'), (1.0, 'pilot_frac=1.0')):
           f'{_tw:.5f} vs {_ZR[1] - _ZR[0]:.5f} (ratio {_tw / (_ZR[1] - _ZR[0]):.4f})')
 
 
+print('\n=== rank_candidates: pattern-grouped scoring is exact ===')
+# scripts/rank_candidates.py scores events grouped by missing-data pattern so
+# the KDE pattern cache (LRU, kde_pattern_cache_size) is not thrashed: with
+# more distinct patterns than cache slots and events in mixed order, every
+# event otherwise rebuilds its pattern's subset by scanning the whole training
+# set, making scoring ~O(N_eval * N_train). Grouping must be a pure speed-up:
+# identical scores, in the caller's original order.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
+from rank_candidates import score_grouped_by_pattern
+from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID
+
+_rngp = np.random.default_rng(11)
+def _mk_patchy(n, mu):
+    """Trajectory events with random NaN dropout -> many distinct patterns."""
+    out = []
+    for _ in range(n):
+        e = {}
+        for day in TRAJECTORY_GRID:
+            suffix = f'_d{int(day)}'
+            for colour in ('ug', 'gr', 'ri', 'iz', 'zy'):
+                e[f'{colour}{suffix}'] = (float('nan') if _rngp.random() < 0.3
+                                          else float(_rngp.normal(mu, 0.4)))
+            e[f'peakmag{suffix}'] = float(_rngp.normal(22, 1))
+        out.append(e)
+    return out
+
+_sig_p, _bg_p = _mk_patchy(300, 1.0), _mk_patchy(300, 0.0)
+_clf_p = TrajectoryClassifier(target_fpr=0.10, kde_pattern_cache_size=4).fit(_sig_p, _bg_p)
+_query_p = _mk_patchy(120, 0.5)
+from cmsne.classifier import colour_feature_matrix, _finite_pattern
+_Xq, _ = colour_feature_matrix(_query_p, _clf_p.keys, _clf_p.extra)
+_n_pat = len({_finite_pattern(x) for x in _Xq})
+check('pattern-grouping test exercises cache eviction (patterns > cache slots)',
+      _n_pat > 4, f'{_n_pat} distinct patterns')
+_plain = _clf_p.score(_query_p)
+_grouped = score_grouped_by_pattern(_clf_p, _query_p)
+check('score_grouped_by_pattern returns scores identical to clf.score, same order',
+      _grouped.shape == _plain.shape and bool(np.array_equal(_grouped, _plain)),
+      f'max |diff| = {np.max(np.abs(_grouped - _plain)) if _grouped.shape == _plain.shape else "shape mismatch"}')
+check('score_grouped_by_pattern handles an empty event list',
+      score_grouped_by_pattern(_clf_p, []).shape == (0,))
+
+
 # NOTE: the checkpoint summary above runs mid-file and exits early on failure.
 # Everything after it needs its own summary, or a failure there is printed but
 # never fails the suite -- which silently covered the absolute_rate_weight

@@ -61,7 +61,10 @@ import matplotlib.pyplot as plt
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
+from sklearn.metrics import roc_curve as _sklearn_roc_curve
+
 from cmsne.trajectory import TrajectoryClassifier, TRAJECTORY_GRID, reveal_up_to
+from cmsne.classifier import colour_feature_matrix, _finite_pattern
 from cmsne.importance_sampling import effective_sample_size
 from investigate_contaminant_properties import (
     TARGET_SIGNAL_CLASSES, TARGET_LABELS, TABLE_POINTS, load_data_tagged,
@@ -89,13 +92,48 @@ def annual_shares(w_sig, w_bg, N_sig_ann, N_bg_ann):
     return a_sig, a_bg
 
 
+def score_grouped_by_pattern(clf, events):
+    """``clf.score(events)``, computed with events grouped by missing-data
+    pattern and returned in the caller's original order.
+
+    WHY. ``score()`` applies the KDE blend per event, and each event's
+    pattern subset comes from an LRU cache of ``kde_pattern_cache_size``
+    (256) entries. A large pool has thousands of distinct patterns, and in
+    mixed order nearly every event evicts and rebuilds a subset -- each
+    rebuild scans the whole training set. Scoring therefore cost
+    ~O(N_eval * N_train): measured on the 15x run, lensed_sn2p (~650k
+    events) took 7h, lensed_Ia (~987k) 17.5h and all_lensed (~1.9M) 62.6h.
+    Grouped, each pattern's subset is built once per call.
+
+    EXACT, not approximate: the subset is deterministic per pattern
+    (``_weighted_subsample`` seed=0; replicas seeded from row content), and
+    each event is scored independently, so this changes cost only. Covered by
+    the pattern-grouping test in tests/test_cmsne.py.
+    """
+    if len(events) == 0:
+        return np.zeros(0)
+    X, _ = colour_feature_matrix(events, clf.keys, clf.extra)
+    patterns = [_finite_pattern(x) for x in X]
+    # Stable sort on the pattern tuple: same-pattern events become contiguous.
+    order = sorted(range(len(events)), key=patterns.__getitem__)
+    scores_sorted = clf.score([events[i] for i in order])
+    scores = np.empty(len(events), dtype=float)
+    scores[np.asarray(order)] = scores_sorted
+    return scores
+
+
 # A budget is reported as unresolvable when the FPR the calib split actually
 # achieves misses the target by more than this, relative to the target.
 FPR_MATCH_TOLERANCE = 0.5
 
 
-def calibrate_thresholds(clf, calib_sig_k, calib_bg_k, w_calib_sig, w_calib_bg):
+def calibrate_thresholds(s_calib_sig, s_calib_bg, w_calib_sig, w_calib_bg):
     """FPR-budget thresholds chosen on calib only -- see module docstring.
+
+    Takes calib SCORES, already computed once by the caller (previously this
+    called ``clf.roc_curve`` and then ``clf.score`` again on the same events,
+    scoring calib twice). The ROC is built exactly as
+    ``ColourClassifier.roc_curve`` builds it: weights as given, no rebalancing.
 
     Returns (thresholds, achieved_fpr, resolvable).
 
@@ -110,10 +148,13 @@ def calibrate_thresholds(clf, calib_sig_k, calib_bg_k, w_calib_sig, w_calib_bg):
     like results and are not, so the achieved FPR is recorded and any budget
     that misses its target is flagged rather than reported straight.
     """
-    fpr_c, _tpr_c, thr_c = clf.roc_curve(calib_sig_k, calib_bg_k, w_calib_sig, w_calib_bg)
+    y_true = np.r_[np.ones(len(s_calib_sig)), np.zeros(len(s_calib_bg))]
+    fpr_c, _tpr_c, thr_c = _sklearn_roc_curve(
+        y_true, np.r_[s_calib_sig, s_calib_bg],
+        sample_weight=np.r_[np.asarray(w_calib_sig, float), np.asarray(w_calib_bg, float)])
     order = np.argsort(fpr_c)
     fpr_c, thr_c = fpr_c[order], thr_c[order]
-    max_calib_score = float(np.max([np.max(clf.score(calib_sig_k)), np.max(clf.score(calib_bg_k))]))
+    max_calib_score = float(max(np.max(s_calib_sig), np.max(s_calib_bg)))
     thresholds, achieved_fpr, resolvable = {}, {}, {}
     for name, target_f in TABLE_POINTS:
         idx = int(np.argmin(np.abs(fpr_c - target_f)))
@@ -157,16 +198,20 @@ def rank_epoch(clf, k, calib_sig, calib_bg, val_sig, val_bg, w_calib_sig, w_cali
     calib_sig_k = [reveal_up_to(e, k, TRAJECTORY_GRID) for e in calib_sig]
     calib_bg_k = [reveal_up_to(e, k, TRAJECTORY_GRID) for e in calib_bg]
     thresholds, achieved_fpr, resolvable = calibrate_thresholds(
-        clf, calib_sig_k, calib_bg_k, w_calib_sig, w_calib_bg)
+        score_grouped_by_pattern(clf, calib_sig_k), score_grouped_by_pattern(clf, calib_bg_k),
+        w_calib_sig, w_calib_bg)
 
     # ---- Everything from here to the marked line is what a real deployment would
     # do against genuinely new, unconfirmed candidates: no label is used. ----
     val_sig_k = [reveal_up_to(e, k, TRAJECTORY_GRID) for e in val_sig]
     val_bg_k = [reveal_up_to(e, k, TRAJECTORY_GRID) for e in val_bg]
     val_events = val_sig_k + val_bg_k
-    order = clf.rank(val_events)              # indices into val_events, best-first
-    scores = clf.score(val_events)
-    probs = clf.probability(val_events)
+    # Score val ONCE. rank(), score() and probability() each rescored every
+    # event; with prior=None, rank() is argsort(score)[::-1] and probability()
+    # is clip(score) (ColourClassifier), so both derive exactly from one pass.
+    scores = score_grouped_by_pattern(clf, val_events)
+    order = np.argsort(scores)[::-1]          # indices into val_events, best-first
+    probs = np.clip(scores, 1e-12, 1 - 1e-12)
     tiers = [assign_tier(float(scores[i]), thresholds, resolvable) for i in range(len(val_events))]
     # ---- DISPLAY ONLY from here: true label reattached purely for inspection ----
     true_label = np.array([1] * len(val_sig_k) + [0] * len(val_bg_k))
